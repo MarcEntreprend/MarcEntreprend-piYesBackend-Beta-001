@@ -1,0 +1,19 @@
+# Supabase (connexion directe — backend only)
+DATABASE_URL="postgresql://postgres...true"
+DIRECT_URL="postgresql://postgres....postgres"
+SUPABASE_URL="https://ipumv...supabase.co"
+SUPABASE_ANON_KEY="sb_..."
+
+# JWT secrets
+JWT_ACCESS_SECRET="..."
+JWT_REFRESH_SECRET="..."
+
+# Environnement
+NODE_ENV="development"
+
+# URL du frontend autorisé en CORS
+# En dev local : laisser vide ou mettre http://localhost:5173
+# En prod : mettre l'URL Vercel du frontend
+FRONTEND_URL=
+
+# Les variables VITE_* ne vont PAS dans le backend — elles sont pour le frontend uniquement
