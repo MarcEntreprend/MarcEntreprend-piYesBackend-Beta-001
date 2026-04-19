@@ -1,4 +1,4 @@
-// server.ts - VERSION VERCEL FINALE
+// backend server.ts - VERSION VERCEL FINALE
 
 import "dotenv/config";
 import express from "express";
@@ -68,40 +68,44 @@ async function initializeApp() {
     res.json({ status: "ok", timestamp: new Date().toISOString() }),
   );
 
-  // API Routes
-  try {
-    const authRoutes = (await import("./server/src/routes/auth")).default;
-    const userRoutes = (await import("./server/src/routes/user")).default;
-    const transactionRoutes = (await import("./server/src/routes/transactions"))
-      .default;
-    const contactRoutes = (await import("./server/src/routes/contacts"))
-      .default;
-    const friendshipRoutes = (await import("./server/src/routes/friendship"))
-      .default;
-    const schedulerRoutes = (await import("./server/src/routes/scheduler"))
-      .default;
-    const serviceRoutes = (await import("./server/src/routes/services"))
-      .default;
-    const promotionRoutes = (await import("./server/src/routes/promotions"))
-      .default;
-    const bankRoutes = (await import("./server/src/routes/banks")).default;
+  // API Routes - Imports avec extension .js pour compatibilité Vercel
+  const apiV1 = express.Router();
 
-    const apiV1 = express.Router();
-    apiV1.use("/auth", authRoutes);
-    apiV1.use("/user", userRoutes);
-    apiV1.use("/transactions", transactionRoutes);
-    apiV1.use("/contacts", contactRoutes);
-    apiV1.use("/friendship", friendshipRoutes);
-    apiV1.use("/scheduler", schedulerRoutes);
-    apiV1.use("/services", serviceRoutes);
-    apiV1.use("/promotions", promotionRoutes);
-    apiV1.use("/banks", bankRoutes);
+  apiV1.use("/auth", (await import("./server/src/routes/auth.js")).default);
+  apiV1.use("/user", (await import("./server/src/routes/user.js")).default);
+  apiV1.use(
+    "/transactions",
+    (await import("./server/src/routes/transactions.js")).default,
+  );
+  apiV1.use(
+    "/contacts",
+    (await import("./server/src/routes/contacts.js")).default,
+  );
+  apiV1.use(
+    "/friendship",
+    (await import("./server/src/routes/friendship.js")).default,
+  );
+  apiV1.use(
+    "/scheduler",
+    (await import("./server/src/routes/scheduler.js")).default,
+  );
+  apiV1.use(
+    "/services",
+    (await import("./server/src/routes/services.js")).default,
+  );
+  apiV1.use(
+    "/promotions",
+    (await import("./server/src/routes/promotions.js")).default,
+  );
+  apiV1.use("/banks", (await import("./server/src/routes/banks.js")).default);
 
-    app.use("/api/v1", apiV1);
-    console.log(">>> [STARTUP] API routes mounted.");
-  } catch (err) {
-    console.error("!!! [ERROR] Failed to load API routes:", err);
-  }
+  // Route de test directe
+  app.get("/api/v1/test", (req, res) => {
+    res.json({ message: "Test route works!" });
+  });
+
+  app.use("/api/v1", apiV1);
+  console.log(">>> [STARTUP] API routes mounted.");
 
   // Fallback 404
   app.use((req, res) => {

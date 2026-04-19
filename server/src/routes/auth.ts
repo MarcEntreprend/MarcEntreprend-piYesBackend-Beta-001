@@ -4,10 +4,10 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { supabase } from "../supabase";
-import { otpService } from "../services/otpService";
-import { loginSchema, signupSchema } from "../../../shared/schemas";
-import { authMiddleware, AuthRequest } from "../middleware";
+import { supabase } from "../supabase.js";
+import { otpService } from "../services/otpService.js";
+import { loginSchema, signupSchema } from "../../../shared/schemas.js";
+import { authMiddleware, AuthRequest } from "../middleware.js";
 
 const router = express.Router();
 
@@ -87,14 +87,12 @@ router.post("/signup", async (req, res) => {
     }
 
     if (existingUser) {
-      return res
-        .status(400)
-        .json({
-          error: {
-            message: "Un compte existe déjà avec cet email ou téléphone",
-            code: "USER_EXISTS",
-          },
-        });
+      return res.status(400).json({
+        error: {
+          message: "Un compte existe déjà avec cet email ou téléphone",
+          code: "USER_EXISTS",
+        },
+      });
     }
 
     const passwordHash = await bcrypt.hash(validated.password, 10);
@@ -270,15 +268,13 @@ router.post("/login", async (req, res) => {
       console.log(
         `[AUTH] Login FAILED: User not found for ${validated.email || validated.phone}`,
       );
-      return res
-        .status(401)
-        .json({
-          error: {
-            message:
-              "Identifiants incorrects. Vérifiez votre email/téléphone et mot de passe.",
-            code: "INVALID_CREDENTIALS",
-          },
-        });
+      return res.status(401).json({
+        error: {
+          message:
+            "Identifiants incorrects. Vérifiez votre email/téléphone et mot de passe.",
+          code: "INVALID_CREDENTIALS",
+        },
+      });
     }
 
     const isPasswordValid = await bcrypt.compare(
@@ -287,15 +283,13 @@ router.post("/login", async (req, res) => {
     );
     if (!isPasswordValid) {
       console.log(`[AUTH] Login FAILED: Wrong password for user ${user.id}`);
-      return res
-        .status(401)
-        .json({
-          error: {
-            message:
-              'Mot de passe incorrect. Veuillez réessayer ou utiliser "Mot de passe oublié".',
-            code: "WRONG_PASSWORD",
-          },
-        });
+      return res.status(401).json({
+        error: {
+          message:
+            'Mot de passe incorrect. Veuillez réessayer ou utiliser "Mot de passe oublié".',
+          code: "WRONG_PASSWORD",
+        },
+      });
     }
 
     // Vérifier si le compte est désactivé (permission 'non')
@@ -308,15 +302,13 @@ router.post("/login", async (req, res) => {
 
     if (userAccount && userAccount.permission === "non") {
       console.log(`[AUTH] Login FAILED: Account disabled for user ${user.id}`);
-      return res
-        .status(403)
-        .json({
-          error: {
-            message:
-              "Votre compte a été désactivé. Contactez le support à paiements@piyes.ht.",
-            code: "ACCOUNT_DISABLED",
-          },
-        });
+      return res.status(403).json({
+        error: {
+          message:
+            "Votre compte a été désactivé. Contactez le support à paiements@piyes.ht.",
+          code: "ACCOUNT_DISABLED",
+        },
+      });
     }
 
     // Check for existing sessions on OTHER devices
@@ -420,14 +412,12 @@ router.post("/verify-session-otp", async (req, res) => {
       .single();
 
     if (error || !session) {
-      return res
-        .status(400)
-        .json({
-          error: {
-            message: "Session introuvable ou expirée",
-            code: "INVALID_SESSION",
-          },
-        });
+      return res.status(400).json({
+        error: {
+          message: "Session introuvable ou expirée",
+          code: "INVALID_SESSION",
+        },
+      });
     }
 
     // Vérification OTP : accepter si le code correspond OU si l'otpService valide (TEST MODE)
@@ -438,11 +428,9 @@ router.post("/verify-session-otp", async (req, res) => {
       !session.otpExpiresAt || new Date() <= new Date(session.otpExpiresAt);
 
     if (!otpValid || !notExpired) {
-      return res
-        .status(400)
-        .json({
-          error: { message: "Code incorrect ou expiré", code: "INVALID_OTP" },
-        });
+      return res.status(400).json({
+        error: { message: "Code incorrect ou expiré", code: "INVALID_OTP" },
+      });
     }
 
     // MVP : supprimer TOUTES les autres sessions de cet user — une seule session active
@@ -762,11 +750,9 @@ router.post("/otp/verify", async (req, res) => {
       console.log(
         `[SECURITY] OTP Verification FAILED for ${target} (Code: ${code})`,
       );
-      return res
-        .status(400)
-        .json({
-          error: { message: "Invalid or expired code", code: "INVALID_OTP" },
-        });
+      return res.status(400).json({
+        error: { message: "Invalid or expired code", code: "INVALID_OTP" },
+      });
     }
 
     console.log(`[SECURITY] OTP Verification SUCCESS for ${target}`);
