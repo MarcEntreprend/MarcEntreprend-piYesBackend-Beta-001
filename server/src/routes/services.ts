@@ -1,9 +1,9 @@
 // server\src\routes\services.ts
 
 import express from "express";
-import { authMiddleware, AuthRequest } from "../middleware";
-import { supabase } from "../supabase";
-import { TransactionType, TransactionRole } from "../../../shared/types";
+import { authMiddleware, AuthRequest } from "../middleware.js";
+import { supabase } from "../supabase.js";
+import { TransactionType, TransactionRole } from "../../../shared/types.js";
 
 const router = express.Router();
 
