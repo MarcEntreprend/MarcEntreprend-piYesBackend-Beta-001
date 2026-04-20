@@ -329,15 +329,25 @@ router.post("/login", async (req, res) => {
       const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
       // Create a pending session
-      await supabase.from("Session").insert({
-        userId: user.id,
-        token: tempToken,
-        device,
-        expiresAt: otpExpiresAt,
-        otpCode,
-        otpExpiresAt,
-        isVerified: false,
-      });
+      const { v4: uuidv4 } = await import("uuid");
+      const { error: sessionInsertError } = await supabase
+        .from("Session")
+        .insert({
+          id: uuidv4(),
+          userId: user.id,
+          token: tempToken,
+          device,
+          expiresAt: otpExpiresAt.toISOString(),
+          otpCode,
+          otpExpiresAt: otpExpiresAt.toISOString(),
+          isVerified: false,
+          createdAt: new Date().toISOString(),
+        });
+
+      if (sessionInsertError) {
+        console.error("Session insert error (MFA):", sessionInsertError);
+        return res.status(500).json({ error: "Failed to create session" });
+      }
 
       return res.json({
         mfaRequired: true,
@@ -677,10 +687,67 @@ router.post("/reset-password", async (req, res) => {
     if (updateError) throw updateError;
 
     // Supprimer TOUTES les sessions de cet user après reset
-    // Évite que les vieilles sessions déclenchent le MFA au prochain login
     await supabase.from("Session").delete().eq("userId", user.id);
 
-    res.json({ success: true, message: "Password reset successfully" });
+    // ✅ AUTO-LOGIN POUR MVP HAÏTI
+    // Récupérer les infos complètes de l'utilisateur
+    const { data: fullUser } = await supabase
+      .from("User")
+      .select("*")
+      .eq("id", user.id)
+      .single();
+
+    if (!fullUser) {
+      return res.status(500).json({ error: "User not found after reset" });
+    }
+
+    // Créer nouveau token et session
+    const token = jwt.sign(
+      { id: fullUser.id, email: fullUser.email },
+      ACCESS_SECRET,
+      { expiresIn: "24h" },
+    );
+    const refreshToken = jwt.sign({ id: fullUser.id }, REFRESH_SECRET, {
+      expiresIn: "30d",
+    });
+
+    // Créer une nouvelle session vérifiée
+    const { v4: uuidv4 } = await import("uuid");
+    await supabase.from("Session").insert({
+      id: uuidv4(),
+      userId: fullUser.id,
+      token: refreshToken,
+      device: "password_reset_auto_login",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      isVerified: true,
+      createdAt: new Date().toISOString(),
+    });
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    // Retourner user + token pour auto-login
+    res.json({
+      success: true,
+      message: "Password reset successfully",
+      user: {
+        id: fullUser.id,
+        name: fullUser.name,
+        tag: fullUser.tag,
+        email: fullUser.email,
+        phone: fullUser.phone,
+        accountNumber: fullUser.accountNumber,
+        avatarUrl: fullUser.avatarUrl,
+        balance: fullUser.balance / 100,
+        isDeviceVerified: true,
+        hasPin: !!fullUser.pinHash,
+      },
+      token,
+    });
   } catch (error) {
     console.error("Reset password error:", error);
     res.status(500).json({ error: "Internal server error" });
