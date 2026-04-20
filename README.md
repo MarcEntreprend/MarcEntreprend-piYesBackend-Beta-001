@@ -10,3 +10,18 @@
    `npm install`
 2. Run the app:
    `npm run dev`
+
+---
+
+## déployer vercel :
+
+cd C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-backend
+
+# Déployer en production (met à jour le backend Vercel)
+
+vercel --prod
+
+## Après vercel --prod, VÉRIFIER LE DÉPLOIEMENT
+
+on vera :
+✅ Production: https://piyesbackend001-xxxxx.vercel.app
