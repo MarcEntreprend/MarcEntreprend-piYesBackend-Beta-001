@@ -43,7 +43,13 @@ async function initializeApp() {
     "http://localhost:3000",
     process.env.FRONTEND_URL || "",
     "capacitor://localhost",
+    "http://capacitor.localhost",
+    "https://capacitor.localhost",
+    "ionic://localhost",
     "http://localhost",
+    "http://localhost:8080",
+    "http://10.0.2.2:3000", // Pour émulateur Android
+    "http://192.168.1.100:5173", // À remplacer par ton IP locale si besoin
   ].filter(Boolean);
 
   app.use(
@@ -67,6 +73,15 @@ async function initializeApp() {
   app.get("/api/health", (req, res) =>
     res.json({ status: "ok", timestamp: new Date().toISOString() }),
   );
+
+  // Route de debug pour tester la connexion
+  app.get("/api/v1/ping", (req, res) => {
+    res.json({
+      message: "pong",
+      timestamp: new Date().toISOString(),
+      origin: req.headers.origin || "unknown",
+    });
+  });
 
   // API Routes - Imports avec extension .js pour compatibilité Vercel
   const apiV1 = express.Router();
