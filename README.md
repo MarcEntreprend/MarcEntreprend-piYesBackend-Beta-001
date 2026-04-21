@@ -13,11 +13,9 @@
 
 ---
 
-## déployer vercel :
+## déployer vercel / # Déployer en production (met à jour le backend Vercel)
 
 cd C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-backend
-
-# Déployer en production (met à jour le backend Vercel)
 
 vercel --prod
 
