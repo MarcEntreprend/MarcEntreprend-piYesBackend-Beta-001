@@ -11,7 +11,7 @@ router.get("/available", authMiddleware, async (req: AuthRequest, res) => {
     {
       id: "b1",
       name: "Unibank",
-      color: "#0252a2",
+      color: "#083a6b",
       provider: "unibank",
       logoUrl:
         "https://pbs.twimg.com/profile_images/1876372583295188992/E63UQYie_400x400.jpg",
@@ -38,7 +38,7 @@ router.get("/available", authMiddleware, async (req: AuthRequest, res) => {
     {
       id: "b4",
       name: "BNC",
-      color: "#00529B",
+      color: "#448bc9",
       provider: "bnc",
       logoUrl: "https://upload.wikimedia.org/wikipedia/fr/6/62/BNC.jpg",
       logoText: "B",
@@ -63,7 +63,7 @@ router.get("/available", authMiddleware, async (req: AuthRequest, res) => {
     {
       id: "b7",
       name: "SOGEBEL",
-      color: "#002F6C",
+      color: "#45505d",
       provider: "sogebel",
       logoUrl:
         "https://scontent.fcgh15-1.fna.fbcdn.net/v/t39.30808-6/472830484_10231787027632413_509798143400489335_n.jpg?_nc_cat=109&ccb=1-7&_nc_sid=1d70fc&_nc_eui2=AeGGWsENZsLeS9QWxEx8ppHZCTkN_NPgfkwJOQ380-B-TB9yIjedq9Dy3dlij1RyavU8Y8MSU9D-HAXsId7jkyx8&_nc_ohc=o45qJpN9CdgQ7kNvwFp5Wed&_nc_oc=Ado_WfR3cOh9n6Qwr3M7Q2IOAjTobvUpmNvI49KZI8benkJhlx5ksl0mCEISwYPzwKY&_nc_zt=23&_nc_ht=scontent.fcgh15-1.fna&_nc_gid=WZbWR_YcUG3U97fTkJtl2Q&_nc_ss=7a3a8&oh=00_Af3Xv97PY30KusQQrpGze-sAA_v5uQtndV-8G_iOogfdWg&oe=69ECC4C2",
@@ -72,7 +72,7 @@ router.get("/available", authMiddleware, async (req: AuthRequest, res) => {
     {
       id: "b8",
       name: "BPH",
-      color: "#00529B",
+      color: "#009b65",
       provider: "bph",
       logoUrl: "https://app.haitieconomie.com/he-images/logo-bph.png",
       logoText: "BP",
@@ -102,7 +102,7 @@ router.post("/link", authMiddleware, async (req: AuthRequest, res) => {
       {
         id: "b1",
         name: "Unibank",
-        color: "#0252a2",
+        color: "#083a6b",
         provider: "unibank",
         logoUrl:
           "https://pbs.twimg.com/profile_images/1876372583295188992/E63UQYie_400x400.jpg",
@@ -129,7 +129,7 @@ router.post("/link", authMiddleware, async (req: AuthRequest, res) => {
       {
         id: "b4",
         name: "BNC",
-        color: "#00529B",
+        color: "#448bc9",
         provider: "bnc",
         logoUrl: "https://upload.wikimedia.org/wikipedia/fr/6/62/BNC.jpg",
         logoText: "B",
@@ -137,7 +137,7 @@ router.post("/link", authMiddleware, async (req: AuthRequest, res) => {
       {
         id: "b5",
         name: "Capital Bank",
-        color: "#F27D26",
+        color: "#fbeeeb",
         provider: "capitalbank",
         logoUrl: "https://app.haitieconomie.com/he-images/logo-capital.png",
         logoText: "C",
@@ -145,7 +145,7 @@ router.post("/link", authMiddleware, async (req: AuthRequest, res) => {
       {
         id: "b6",
         name: "BUH",
-        color: "#002F6C",
+        color: "##f7941d",
         provider: "buh",
         logoUrl:
           "https://play-lh.googleusercontent.com/g6SkmV9eK1pdyVQpJS8x7VtPZnJlQ77GpDtI_U4JRj3fdeDlD7gHZxl8mtzxTL1pZkKD",
@@ -154,14 +154,16 @@ router.post("/link", authMiddleware, async (req: AuthRequest, res) => {
       {
         id: "b7",
         name: "SOGEBEL",
-        color: "#002F6C",
+        color: "#45505d",
         provider: "sogebel",
+        logoUrl:
+          "https://scontent.fcgh15-1.fna.fbcdn.net/v/t39.30808-6/472830484_10231787027632413_509798143400489335_n.jpg?_nc_cat=109&ccb=1-7&_nc_sid=1d70fc&_nc_eui2=AeGGWsENZsLeS9QWxEx8ppHZCTkN_NPgfkwJOQ380-B-TB9yIjedq9Dy3dlij1RyavU8Y8MSU9D-HAXsId7jkyx8&_nc_ohc=o45qJpN9CdgQ7kNvwFp5Wed&_nc_oc=Ado_WfR3cOh9n6Qwr3M7Q2IOAjTobvUpmNvI49KZI8benkJhlx5ksl0mCEISwYPzwKY&_nc_zt=23&_nc_ht=scontent.fcgh15-1.fna&_nc_gid=WZbWR_YcUG3U97fTkJtl2Q&_nc_ss=7a3a8&oh=00_Af3Xv97PY30KusQQrpGze-sAA_v5uQtndV-8G_iOogfdWg&oe=69ECC4C2",
         logoText: "SB",
       },
       {
         id: "b8",
         name: "BPH",
-        color: "#00529B",
+        color: "#009b65",
         provider: "bph",
         logoUrl: "https://app.haitieconomie.com/he-images/logo-bph.png",
         logoText: "BP",
