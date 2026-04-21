@@ -11,7 +11,7 @@ router.get("/available", authMiddleware, async (req: AuthRequest, res) => {
     {
       id: "b1",
       name: "Unibank",
-      color: "##0252a2",
+      color: "#0252a2",
       provider: "unibank",
       logoUrl:
         "https://pbs.twimg.com/profile_images/1876372583295188992/E63UQYie_400x400.jpg",
@@ -102,10 +102,10 @@ router.post("/link", authMiddleware, async (req: AuthRequest, res) => {
       {
         id: "b1",
         name: "Unibank",
-        color: "#00875A",
+        color: "#0252a2",
         provider: "unibank",
         logoUrl:
-          "https://play-lh.googleusercontent.com/lJYChu_qFF7NqVoWYluKhazd615vzdrDmZp4NtovS4gl3rJhDBri0xshlC62xNVZUg=w480-h960-rw",
+          "https://pbs.twimg.com/profile_images/1876372583295188992/E63UQYie_400x400.jpg",
         logoText: "U",
       },
       {
