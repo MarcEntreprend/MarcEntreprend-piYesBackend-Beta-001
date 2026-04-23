@@ -498,7 +498,8 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
 
       if (sourceAccount?.provider === "moncash") {
         try {
-          const { moncashService } = await import("../services/moncashService");
+          const { moncashService } =
+            await import("../services/moncashService.js");
           const orderId = generateId();
           const redirectUrl = await moncashService.createPayment(
             validated.amount,
@@ -632,7 +633,8 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
 
       if (destAccount?.provider === "moncash") {
         try {
-          const { moncashService } = await import("../services/moncashService");
+          const { moncashService } =
+            await import("../services/moncashService.js");
 
           // 1. Check prefunded balance
           const merchantBalance = await moncashService.getPrefundedBalance();
@@ -1448,7 +1450,7 @@ router.post(
       if (!transactionId)
         return res.status(400).json({ error: "Missing transactionId" });
 
-      const { moncashService } = await import("../services/moncashService");
+      const { moncashService } = await import("../services/moncashService.js");
       const result =
         await moncashService.retrieveTransactionPayment(transactionId);
 
