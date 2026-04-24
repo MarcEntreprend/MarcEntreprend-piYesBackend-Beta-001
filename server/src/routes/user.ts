@@ -131,6 +131,13 @@ router.get("/sync", authMiddleware, async (req: AuthRequest, res) => {
         idNumber: user.idNumber,
         timezone: user.timezone,
         privacySettings: user.privacySettings?.[0] || user.privacySettings,
+        primaryKeys: (() => {
+          const keys: { type: string; value: string }[] = [];
+          if (user.tag) keys.push({ type: "tag", value: user.tag });
+          if (user.email) keys.push({ type: "email", value: user.email });
+          if (user.phone) keys.push({ type: "phone", value: user.phone });
+          return keys;
+        })(),
         secondaryKeys: user.keys || [],
       },
       accounts,
@@ -592,6 +599,28 @@ router.post("/keys", authMiddleware, async (req: AuthRequest, res) => {
       if (!/^\+509\d{8}$/.test(cleanValue)) {
         return res.status(400).json({
           error: "Invalid phone format (must be +509 followed by 8 digits)",
+        });
+      }
+    }
+
+    // Vérifier que la clé ne correspond pas à une clé primaire (User)
+    const { data: currentUser } = await supabase
+      .from("User")
+      .select("tag, email, phone")
+      .eq("id", userId)
+      .single();
+
+    if (currentUser) {
+      if (
+        (type === "tag" &&
+          cleanValue.toLowerCase() === currentUser.tag?.toLowerCase()) ||
+        (type === "email" &&
+          cleanValue.toLowerCase() === currentUser.email?.toLowerCase()) ||
+        (type === "phone" && cleanValue === currentUser.phone)
+      ) {
+        return res.status(400).json({
+          error: "Cette clé fait déjà partie de vos clés principales.",
+          code: "PRIMARY_KEY_EXISTS",
         });
       }
     }
