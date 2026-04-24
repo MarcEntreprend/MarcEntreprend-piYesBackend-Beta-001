@@ -1203,6 +1203,25 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
       status: tx.status || "success",
       date: tx.date,
       receipt_type: tx.type,
+      receipt_subtype: tx.description?.includes("Transfert via clé")
+        ? "P2P_KEY"
+        : tx.description?.includes("Rappel de transfert")
+          ? "P2P_SCHEDULE"
+          : tx.description?.includes("Paiement par lien")
+            ? "P2P_LINK"
+            : tx.description?.includes("QR Payment")
+              ? "P2P_QR"
+              : tx.description?.includes("Recharge")
+                ? "RECHARGE"
+                : tx.description?.includes("Dépôt sur compte")
+                  ? "DEPOSIT"
+                  : tx.description?.includes("Retrait")
+                    ? "WITHDRAW"
+                    : tx.description?.includes("Transfert inter-bancaire")
+                      ? "INTERBANK"
+                      : tx.description?.includes("Transfert international")
+                        ? "INTERNATIONAL"
+                        : undefined,
       external_id: tx.external_id,
       auth_code: tx.auth_code,
       transaction_id: tx.id,
