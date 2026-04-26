@@ -326,7 +326,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         amount: validated.amount.toString(),
         isRead: false,
         targetId: schedulerId,
-        route: "/scheduler",
+        route: "/scheduler?tab=outgoing",
         timestamp: paidAt,
       });
     }
