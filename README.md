@@ -46,6 +46,8 @@ piyes-wallet-backend/
 
 **Prerequisites:** Node.js
 
+npm run build
+
 1. Install dependencies:
    `npm install`
 2. Run the app:
