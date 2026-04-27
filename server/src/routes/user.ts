@@ -859,4 +859,32 @@ router.patch(
   },
 );
 
+// POST /api/users/by-phones
+// Reçoit { phones: string[] }
+// Retourne { users: [{ id, phone, name, firstName, lastName, tag, avatarUrl }] }
+router.post("/by-phones", async (req: AuthRequest, res) => {
+  try {
+    const { phones } = req.body;
+
+    if (!phones || !Array.isArray(phones) || phones.length === 0) {
+      return res.status(400).json({ error: "Liste de phones requise" });
+    }
+
+    const { data: users, error } = await supabase
+      .from("User")
+      .select("id, phone, name, firstName, lastName, tag, avatarUrl")
+      .in("phone", phones);
+
+    if (error) {
+      console.error("Erreur Supabase:", error);
+      return res.status(500).json({ error: "Erreur recherche utilisateurs" });
+    }
+
+    return res.json({ users: users || [] });
+  } catch (error) {
+    console.error("Erreur route /by-phones:", error);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 export default router;
