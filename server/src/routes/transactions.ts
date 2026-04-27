@@ -71,7 +71,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       .from("User")
       .select("*")
       .or(
-        `id.eq."${validated.contactId}",tag.ilike."${validated.contactId}",accountNumber.eq."${validated.contactId}"`,
+        `id.eq."${validated.contactId}",tag.ilike."${validated.contactId}",accountNumber.eq."${validated.contactId}",phone.eq."${validated.contactId}"`,
       )
       .maybeSingle();
 
@@ -1881,6 +1881,23 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         .from("User")
         .select("id, name, tag, phone, email, avatarUrl")
         .eq("accountNumber", key)
+        .maybeSingle();
+      if (data) receiver = data;
+    }
+
+    // 3b. Chercher par phone dans User (clé primaire)
+    if (!receiver) {
+      // Normaliser le format du phone : +509 suivi de 8 chiffres
+      let normalizedPhone = key;
+      if (!normalizedPhone.startsWith("+")) {
+        normalizedPhone = normalizedPhone.startsWith("509")
+          ? `+${normalizedPhone}`
+          : `+509${normalizedPhone}`;
+      }
+      const { data } = await supabase
+        .from("User")
+        .select("id, name, tag, phone, email, avatarUrl")
+        .eq("phone", normalizedPhone)
         .maybeSingle();
       if (data) receiver = data;
     }
