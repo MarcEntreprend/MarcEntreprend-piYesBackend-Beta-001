@@ -332,6 +332,7 @@ export interface Card {
 export interface Contact {
   id: string;
   name: string;
+  repertoireName?: string;
   tag: string;
   initials?: string;
   userId: string; // The owner of this contact entry
