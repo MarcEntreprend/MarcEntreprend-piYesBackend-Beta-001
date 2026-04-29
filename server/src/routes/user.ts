@@ -859,30 +859,55 @@ router.patch(
   },
 );
 
-// POST /api/users/by-phones
-// Reçoit { phones: string[] }
-// Retourne { users: [{ id, phone, name, firstName, lastName, tag, avatarUrl }] }
+// POST /api/v1/user/by-phones
+// Receives normalized 8-digit phones, builds all variants for DB lookup
 router.post("/by-phones", async (req: AuthRequest, res) => {
   try {
     const { phones } = req.body;
+
+    // Temporary debug log — remove after confirming format
+    console.log("[by-phones] Received phones sample:", phones.slice(0, 5));
 
     if (!phones || !Array.isArray(phones) || phones.length === 0) {
       return res.status(400).json({ error: "Liste de phones requise" });
     }
 
+    // Build all format variants for each phone to maximize DB matches
+    const phoneVariants = [
+      ...new Set(
+        phones.flatMap((p: string) => {
+          const digits = p.replace(/\D/g, "");
+          // Extract last 8 digits (bare Haitian number)
+          const bare = digits.length >= 8 ? digits.slice(-8) : digits;
+          return [bare, `509${bare}`, `+509${bare}`];
+        }),
+      ),
+    ];
+
+    console.log(
+      `[by-phones] Searching ${phoneVariants.length} variants for ${phones.length} phones`,
+    );
+
     const { data: users, error } = await supabase
       .from("User")
       .select("id, phone, name, firstName, lastName, tag, avatarUrl")
-      .in("phone", phones);
+      .in("phone", phoneVariants);
 
+    // Temporary debug log
+    console.log(
+      "[by-phones] Found users:",
+      (users || []).map((u: any) => u.phone),
+    );
+    //
     if (error) {
-      console.error("Erreur Supabase:", error);
+      console.error("[by-phones] Supabase error:", error);
       return res.status(500).json({ error: "Erreur recherche utilisateurs" });
     }
 
+    console.log(`[by-phones] Found ${users?.length || 0} users`);
     return res.json({ users: users || [] });
   } catch (error) {
-    console.error("Erreur route /by-phones:", error);
+    console.error("[by-phones] Route error:", error);
     return res.status(500).json({ error: "Erreur serveur" });
   }
 });
