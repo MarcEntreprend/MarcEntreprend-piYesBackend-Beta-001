@@ -46,12 +46,13 @@ piyes-wallet-backend/
 
 **Prerequisites:** Node.js
 
-npm run build
-
 1. Install dependencies:
    `npm install`
 2. Run the app:
    `npm run dev`
+
+npm install
+npm run dev
 
 ---
 
@@ -59,6 +60,7 @@ npm run build
 
 cd C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-backend
 
+npm run build
 vercel --prod
 
 ## Après vercel --prod, VÉRIFIER LE DÉPLOIEMENT
