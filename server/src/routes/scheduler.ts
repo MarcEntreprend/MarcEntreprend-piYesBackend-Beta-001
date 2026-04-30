@@ -146,7 +146,11 @@ router.post("/create", authMiddleware, async (req: AuthRequest, res) => {
       id,
       "/scheduler",
       amountCents / 100,
-      { payerName },
+      {
+        name: payerName,
+        amount: amountCents / 100,
+        date: new Date(dueDate).toISOString(),
+      },
     );
 
     if (payerUserId) {
@@ -167,7 +171,7 @@ router.post("/create", authMiddleware, async (req: AuthRequest, res) => {
         {
           name: receiver?.name,
           amount: amountCents / 100,
-          dueDate: new Date(dueDate).toISOString(),
+          date: new Date(dueDate).toISOString(),
           receiverUserId,
           receiverName: receiverFull?.name,
           receiverTag: receiverFull?.tag,
@@ -384,8 +388,9 @@ router.post("/confirm", authMiddleware, async (req: AuthRequest, res) => {
       "/scheduler",
       sched.amount / 100,
       {
-        payerName: payer?.name,
-        dueDate: String(sched.dueDate),
+        name: payer?.name,
+        amount: sched.amount / 100,
+        date: String(sched.dueDate),
         remindersCount,
       },
     );
@@ -398,9 +403,12 @@ router.post("/confirm", authMiddleware, async (req: AuthRequest, res) => {
       sched.id,
       "/scheduler",
       sched.amount / 100,
-      { receiverName: receiver?.name, dueDate: String(sched.dueDate) },
+      {
+        name: receiver?.name,
+        amount: sched.amount / 100,
+        date: String(sched.dueDate),
+      },
     );
-
     res.json({ success: true, scheduleId: sched.id });
   } catch (e: any) {
     console.error("Scheduler confirm error:", e);
@@ -440,6 +448,7 @@ router.delete("/:id", authMiddleware, async (req: AuthRequest, res) => {
           .select("name")
           .eq("id", userId)
           .single();
+
         await createNotif(
           sched.payerUserId,
           "scheduled_cancelled",
@@ -450,6 +459,7 @@ router.delete("/:id", authMiddleware, async (req: AuthRequest, res) => {
           sched.amount / 100,
           { name: receiver?.name, amount: sched.amount / 100 },
         );
+
         await createNotif(
           userId,
           "scheduled_cancelled",
