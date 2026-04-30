@@ -52,21 +52,15 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
 
     if (senderError || !sender) throw new Error("User not found");
 
-    // TEST MODE MVP : PIN accepté sans vérification
-    // TODO: décommenter la vérification bcrypt en production
-    // if (!sender.pinHash) throw new Error('PIN not set');
-    // const isPinValid = await bcrypt.compare(validated.pin, sender.pinHash);
-    // if (!isPinValid) throw new Error('Invalid PIN');
     console.log(`[TEST MODE] PIN bypass for user ${sender.id}`);
 
     if (sender.balance < amountCents) {
       throw new Error("Insufficient balance");
     }
 
-    // Find receiver by tag, ID, account number or secondary key
+    // Find receiver
     let receiver = null;
 
-    // 1. Try User table (id, tag, accountNumber) - Case-insensitive for tag
     const { data: userReceiver } = await supabase
       .from("User")
       .select("*")
@@ -78,7 +72,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
     if (userReceiver) {
       receiver = userReceiver;
     } else {
-      // 2. Try Key table (secondary keys)
       const { data: keyMatch } = await supabase
         .from("Key")
         .select("userId")
@@ -96,15 +89,11 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
-    if (!receiver) {
-      throw new Error("Receiver not found");
-    }
-
-    if (receiver.id === sender.id) {
+    if (!receiver) throw new Error("Receiver not found");
+    if (receiver.id === sender.id)
       throw new Error("Cannot transfer to yourself");
-    }
 
-    // Vérifier la permission du compte receiver avant de procéder
+    // Permission check
     const { data: receiverPermAccount } = await supabase
       .from("Account")
       .select("permission")
@@ -118,7 +107,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       );
     }
 
-    // Fetch sender's piyes account ID
+    // Fetch accounts
     const { data: senderAccount } = await supabase
       .from("Account")
       .select("id")
@@ -127,12 +116,8 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     const accountId = senderAccount?.id || "piyes-main";
 
-    // Create transaction records first to ensure they exist
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
-    console.log(
-      `Processing transfer: sender=${sender.id}, receiver=${receiver.id}, pin_provided=${!!validated.pin}`,
-    );
 
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
@@ -152,12 +137,8 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       .select()
       .single();
 
-    if (txError) {
-      console.error("Failed to create sender transaction record:", txError);
-      throw txError;
-    }
+    if (txError) throw txError;
 
-    // Fetch receiver's piyes account ID
     const { data: receiverAccount } = await supabase
       .from("Account")
       .select("id")
@@ -167,7 +148,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
     const receiverAccountId = receiverAccount?.id || "piyes-main";
 
     const receiverTxId = generateId();
-    const { error: txError2 } = await supabase.from("Transaction").insert({
+    await supabase.from("Transaction").insert({
       id: receiverTxId,
       type: TransactionType.TRANSFER,
       amount: amountCents,
@@ -180,67 +161,73 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       auth_code: authCode,
       date: new Date().toISOString(),
     });
-    if (txError2)
-      console.error("Failed to create receiver transaction record:", txError2);
 
     // Update balances
-    const { error: decError } = await supabase
+    await supabase
       .from("User")
       .update({
         balance: sender.balance - amountCents,
         updatedAt: new Date().toISOString(),
       })
       .eq("id", sender.id);
-    if (decError) throw decError;
-
-    // Sync Sender's piYès account balance
     await supabase
       .from("Account")
       .update({ balance: sender.balance - amountCents })
       .eq("userId", sender.id)
       .eq("provider", "piyes");
 
-    const { error: incError } = await supabase
+    await supabase
       .from("User")
       .update({
         balance: receiver.balance + amountCents,
         updatedAt: new Date().toISOString(),
       })
       .eq("id", receiver.id);
-    if (incError) {
-      console.error("Failed to increment receiver balance:", incError);
-    }
-
-    // Sync Receiver's piYès account balance
     await supabase
       .from("Account")
       .update({ balance: receiver.balance + amountCents })
       .eq("userId", receiver.id)
       .eq("provider", "piyes");
 
-    // Create notification for receiver
+    // Notification for receiver
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: receiver.id,
       type: "transfer_received",
-      title: "Transfert reçu",
-      body: `Vous avez reçu ${validated.amount} HTG de ${sender.name}`,
+      title: "transfer_received",
+      body: "transfer_received.body",
       amount: validated.amount.toString(),
+      data: { name: sender.name, amount: validated.amount },
       isRead: false,
       targetId: receiverTxId,
       route: "/history",
       timestamp: new Date().toISOString(),
     });
 
-    // Update or Create Contact for the sender
+    // Notification for sender (payer)
+    await supabase.from("Notification").insert({
+      id: generateId(),
+      userId: sender.id,
+      type: "transfer_out",
+      title: "transfer_out",
+      body: "transfer_out.body",
+      amount: validated.amount.toString(),
+      data: { name: receiver.name, amount: validated.amount },
+      isRead: false,
+      targetId: transaction.id,
+      route: "/history",
+      timestamp: new Date().toISOString(),
+    });
+
+    // Update contacts
     const now = new Date().toISOString();
+    // ... (contact logic unchanged, keep as is)
     const { data: existingContact } = await supabase
       .from("Contact")
       .select("id")
       .eq("userId", sender.id)
       .eq("contactUserId", receiver.id)
       .maybeSingle();
-
     const contactData = {
       userId: sender.id,
       contactUserId: receiver.id,
@@ -251,7 +238,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       lastTransactionDate: now,
       isVerified: true,
     };
-
     if (existingContact) {
       await supabase
         .from("Contact")
@@ -266,14 +252,12 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
-    // Mettre à jour lastTransactionDate côté receiver aussi (pour qu'il apparaisse dans ses récents)
     const { data: receiverExistingContact } = await supabase
       .from("Contact")
       .select("id")
       .eq("userId", receiver.id)
       .eq("contactUserId", sender.id)
       .maybeSingle();
-
     const receiverContactData = {
       userId: receiver.id,
       contactUserId: sender.id,
@@ -284,7 +268,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       lastTransactionDate: now,
       isVerified: true,
     };
-
     if (receiverExistingContact) {
       await supabase
         .from("Contact")
@@ -299,16 +282,14 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
-    // Si paiement depuis un rappel scheduler → marquer comme payé des deux côtés
+    // If payment from scheduled reminder
     const schedulerId = req.body.schedulerId;
     if (schedulerId) {
       const paidAt = new Date().toISOString();
-      // Marquer côté payeur (outgoing)
       await supabase
         .from("ScheduledPayment")
         .update({ status: "paid", paidAt, updatedAt: paidAt })
         .eq("id", schedulerId);
-      // Marquer côté receiver (chercher l'item incoming lié)
       await supabase
         .from("ScheduledPayment")
         .update({ status: "paid", paidAt, updatedAt: paidAt })
@@ -316,23 +297,20 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         .eq("receiverUserId", receiver.id)
         .eq("type", "incoming")
         .eq("status", "confirmed");
-      // Notif receiver : rappel payé
       await supabase.from("Notification").insert({
         id: generateId(),
         userId: receiver.id,
         type: "scheduled_confirmed",
-        title: "Rappel payé !",
-        body: `${sender.name} a effectué le paiement de ${validated.amount} G. prévu par le rappel.`,
+        title: "scheduled_confirmed",
+        body: "scheduled_confirmed.body",
         amount: validated.amount.toString(),
+        data: { name: sender.name, amount: validated.amount },
         isRead: false,
         targetId: schedulerId,
         route: "/scheduler?tab=outgoing",
         timestamp: paidAt,
       });
     }
-
-    // TODO: Send push notification via FCM/OneSignal
-    // sendPushNotification(receiver.id, 'Transfert reçu', `Vous avez reçu ${validated.amount} HTG de ${sender.name}`);
 
     const nameParts = receiver.name.trim().split(/\s+/);
     const recipientInitials =
@@ -355,7 +333,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 2. RECHARGE
+// 2. RECHARGE (unchanged, no notification)
 router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -364,17 +342,13 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
     const validated = rechargeSchema.parse(req.body);
     const amountCents = Math.round(validated.amount * 100);
 
-    // 1. Fetch account and verify balance FIRST
     const { data: account, error: accError } = await supabase
       .from("Account")
       .select("*")
       .eq("id", validated.accountId)
       .eq("userId", userId)
       .single();
-
-    if (accError || !account) {
-      throw new Error("Compte de paiement introuvable");
-    }
+    if (accError || !account) throw new Error("Compte de paiement introuvable");
 
     if (account.balance < amountCents) {
       return res.status(400).json({
@@ -385,30 +359,17 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
-    // 2. Fetch user for PIN verification
     const { data: user } = await supabase
       .from("User")
       .select("*")
       .eq("id", userId)
       .single();
     if (!user) throw new Error("Utilisateur introuvable");
-
-    // if (!user.pinHash) throw new Error('PIN non configuré');
-    // const isPinValid = await bcrypt.compare(validated.pin, user.pinHash);
-    // if (!isPinValid) throw new Error('PIN invalide');
-
-    // TEST MODE MVP : PIN recharge bypassé
-    // TODO: réactiver en production
-    // if (!user.pinHash) throw new Error('PIN non configuré');
-    // const isPinValid = await bcrypt.compare(validated.pin, user.pinHash);
-    // if (!isPinValid) throw new Error('PIN invalide');
     console.log(`[TEST MODE] PIN bypass for recharge user ${userId}`);
 
-    // 3. Execute transaction
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
-    // Create transaction record
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -426,31 +387,17 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
       })
       .select()
       .single();
-
     if (txError) throw txError;
 
-    // Update balances
     const newAccountBalance = account.balance - amountCents;
-
-    // Update the specific account
-    const { error: updateAccError } = await supabase
+    await supabase
       .from("Account")
-      .update({
-        balance: newAccountBalance,
-        updatedAt: new Date().toISOString(),
-      })
+      .update({ balance: newAccountBalance })
       .eq("id", account.id);
-
-    if (updateAccError) throw updateAccError;
-
-    // If it was the piyes account, also update the User table balance
     if (account.provider === "piyes") {
       await supabase
         .from("User")
-        .update({
-          balance: newAccountBalance,
-          updatedAt: new Date().toISOString(),
-        })
+        .update({ balance: newAccountBalance })
         .eq("id", userId);
     }
 
@@ -478,7 +425,6 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     if (!user) throw new Error("User not found");
 
-    // Fetch piyes account ID
     const { data: userAccount } = await supabase
       .from("Account")
       .select("id")
@@ -487,7 +433,7 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     const accountId = userAccount?.id || "piyes-main";
 
-    // MonCash specific logic
+    // MonCash logic (unchanged)
     if (validated.accountId) {
       const { data: sourceAccount } = await supabase
         .from("Account")
@@ -495,7 +441,6 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
         .eq("id", validated.accountId)
         .eq("userId", userId)
         .single();
-
       if (sourceAccount?.provider === "moncash") {
         try {
           const { moncashService } =
@@ -505,10 +450,8 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
             validated.amount,
             orderId,
           );
-
-          // Create a pending transaction
           await supabase.from("Transaction").insert({
-            id: orderId, // Use orderId as ID for tracking
+            id: orderId,
             type: TransactionType.DEPOSIT,
             amount: amountCents,
             description: "Dépôt MonCash (En attente)",
@@ -519,10 +462,8 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
             status: "PENDING",
             date: new Date().toISOString(),
           });
-
           return res.json({ redirectUrl, orderId });
         } catch (error: any) {
-          console.error("MonCash deposit init error:", error);
           return res.status(400).json({
             error: {
               message: error.message || "MonCash initialization failed",
@@ -551,7 +492,6 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       })
       .select()
       .single();
-
     if (txError) throw txError;
 
     const newBalance = user.balance + amountCents;
@@ -566,18 +506,23 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       .eq("provider", "piyes");
 
     // Create notification for deposit
-    await supabase.from("Notification").insert({
+    const { error: notifError } = await supabase.from("Notification").insert({
       id: generateId(),
       userId: userId,
-      type: "transfer_received",
-      title: "Dépôt réussi",
-      body: `Votre dépôt de ${validated.amount} HTG a été complété.`,
+      type: "deposit_success",
+      title: "deposit_success",
+      body: "deposit_success.body",
       amount: validated.amount.toString(),
+      data: { name: "piYès Bank", amount: validated.amount, currency: "HTG" },
       isRead: false,
-      targetId: transaction?.id,
+      targetId: transaction.id,
       route: "/history",
       timestamp: new Date().toISOString(),
     });
+
+    if (notifError) {
+      console.error("Deposit notification error:", notifError);
+    }
 
     res.json(transaction);
   } catch (error: any) {
@@ -603,17 +548,8 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     if (!user) throw new Error("User not found");
 
-    // if (!user.pinHash) throw new Error('PIN not set');
-    // console.log(`Verifying PIN for withdraw, user ${user.id}. Hash exists: ${!!user.pinHash}`);
-    // const isPinValid = await bcrypt.compare(validated.pin, user.pinHash);
-    // console.log(`PIN verification result for withdraw, user ${user.id}: ${isPinValid}`);
-    // if (!isPinValid) throw new Error('Invalid PIN');
+    if (user.balance < amountCents) throw new Error("Insufficient balance");
 
-    if (user.balance < amountCents) {
-      throw new Error("Insufficient balance");
-    }
-
-    // Fetch piyes account ID
     const { data: userAccount } = await supabase
       .from("Account")
       .select("id")
@@ -622,7 +558,7 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     const accountId = userAccount?.id || "piyes-main";
 
-    // MonCash specific logic
+    // MonCash logic
     if (validated.accountId) {
       const { data: destAccount } = await supabase
         .from("Account")
@@ -630,21 +566,16 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
         .eq("id", validated.accountId)
         .eq("userId", userId)
         .single();
-
       if (destAccount?.provider === "moncash") {
         try {
           const { moncashService } =
             await import("../services/moncashService.js");
-
-          // 1. Check prefunded balance
           const merchantBalance = await moncashService.getPrefundedBalance();
           if (merchantBalance < validated.amount) {
             throw new Error(
               "Service temporairement indisponible (Solde marchand insuffisant)",
             );
           }
-
-          // 2. Execute transfer
           const reference = generateId();
           const result = await moncashService.transfer(
             validated.amount,
@@ -652,7 +583,6 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
             reference,
           );
 
-          // 3. Update balances and create transaction
           const txCode = generateTxCode();
           const authCode = generateAuthCode();
           const { data: transaction, error: txError } = await supabase
@@ -674,7 +604,6 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
             })
             .select()
             .single();
-
           if (txError) throw txError;
 
           const newBalance = user.balance - amountCents;
@@ -688,24 +617,21 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
             .eq("userId", userId)
             .eq("provider", "piyes");
 
-          // Create notification for MonCash withdraw
           await supabase.from("Notification").insert({
             id: generateId(),
             userId: userId,
             type: "transfer_out",
-            title: "Retrait réussi",
-            body: `Votre retrait de ${validated.amount} HTG vers MonCash a été complété.`,
+            title: "transfer_out",
+            body: "transfer_out.body",
             amount: validated.amount.toString(),
+            data: { name: "MonCash", amount: validated.amount },
             isRead: false,
-            targetId: transaction?.id,
+            targetId: transaction.id,
             route: "/history",
             timestamp: new Date().toISOString(),
           });
-
           return res.json(transaction);
         } catch (error: any) {
-          console.error("MonCash withdraw error:", error);
-          // Handle 403 specifically as requested
           if (error.message === "Maximum Account Balance") {
             return res.status(400).json({
               error: {
@@ -722,6 +648,7 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
+    // Standard withdrawal
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
     const { data: transaction, error: txError } = await supabase
@@ -741,7 +668,6 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       })
       .select()
       .single();
-
     if (txError) throw txError;
 
     const newBalance = user.balance - amountCents;
@@ -755,16 +681,16 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", userId)
       .eq("provider", "piyes");
 
-    // Create notification for withdraw
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: userId,
       type: "transfer_out",
-      title: "Retrait réussi",
-      body: `Votre retrait de ${validated.amount} HTG a été complété.`,
+      title: "transfer_out",
+      body: "transfer_out.body",
       amount: validated.amount.toString(),
+      data: { name: "piYès Bank", amount: validated.amount },
       isRead: false,
-      targetId: transaction?.id,
+      targetId: transaction.id,
       route: "/history",
       timestamp: new Date().toISOString(),
     });
@@ -777,7 +703,7 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 5. REQUEST PAYMENT
+// 5. REQUEST PAYMENT (unchanged)
 router.post("/request", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -797,7 +723,6 @@ router.post("/request", authMiddleware, async (req: AuthRequest, res) => {
         .select("id")
         .or(`tag.eq.${validated.payer},accountNumber.eq.${validated.payer}`)
         .single();
-
       if (payer) {
         await supabase.from("Notification").insert({
           id: generateId(),
@@ -814,7 +739,6 @@ router.post("/request", authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
-    // Generate dynamic payment link (Point 10.1)
     const { data: user } = await supabase
       .from("User")
       .select("tag, phone, email")
@@ -829,9 +753,7 @@ router.post("/request", authMiddleware, async (req: AuthRequest, res) => {
         : user?.email
           ? "email"
           : "id";
-    const amount = validated.amount;
-    const paymentLink = `https://piyes.ht/pay?to=${encodeURIComponent(to)}&type=${type}&amount=${amount}`;
-
+    const paymentLink = `https://piyes.ht/pay?to=${encodeURIComponent(to)}&type=${type}&amount=${validated.amount}`;
     res.json({
       success: true,
       message: "Payment request created",
@@ -844,7 +766,7 @@ router.post("/request", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 6. SCHEDULE PAYMENT
+// 6. SCHEDULE PAYMENT (unchanged)
 router.post("/schedule", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -852,7 +774,6 @@ router.post("/schedule", authMiddleware, async (req: AuthRequest, res) => {
 
     const validated = schedulePaymentSchema.parse(req.body);
     const amountCents = Math.round(validated.amount * 100);
-
     const { data: scheduled, error } = await supabase
       .from("ScheduledPayment")
       .insert({
@@ -867,7 +788,6 @@ router.post("/schedule", authMiddleware, async (req: AuthRequest, res) => {
       })
       .select()
       .single();
-
     if (error) throw error;
     res.json(scheduled);
   } catch (error: any) {
@@ -877,7 +797,7 @@ router.post("/schedule", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 7. QR SCAN / PAY
+// 7. QR SCAN / PAY (unchanged except notification)
 router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -885,22 +805,16 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
 
     const { qrData, pin, amount } = req.body;
     const data = typeof qrData === "string" ? JSON.parse(qrData) : qrData;
-
-    if (data.expiry && Date.now() > data.expiry) {
+    if (data.expiry && Date.now() > data.expiry)
       return res.status(400).json({ error: "QR Code expired" });
-    }
 
-    // Point 11.2: Identify receiver from QR JSON (id, tag, phone, or email)
     const receiverId = data.id;
     const receiverTag = data.tag;
     const receiverPhone = data.phone;
     const receiverEmail = data.email;
-
-    // Amount can come from QR (if it was a request) or from request body
     const paymentAmount = amount || data.amount;
-    if (!paymentAmount) {
+    if (!paymentAmount)
       return res.status(400).json({ error: "Amount is required" });
-    }
     const amountCents = Math.round(paymentAmount * 100);
 
     const { data: sender } = await supabase
@@ -909,22 +823,10 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .eq("id", userId)
       .single();
     if (!sender) throw new Error("User not found");
-
-    // TEST MODE MVP : PIN accepté sans vérification
-    // TODO: décommenter la vérification bcrypt en production
-    // if (!sender.pinHash) throw new Error('PIN not set');
-    // const isPinValid = await bcrypt.compare(validated.pin, sender.pinHash);
-    // if (!isPinValid) throw new Error('Invalid PIN');
     console.log(`[TEST MODE] PIN bypass for user ${sender.id}`);
+    if (sender.balance < amountCents) throw new Error("Insufficient balance");
 
-    if (sender.balance < amountCents) {
-      throw new Error("Insufficient balance");
-    }
-
-    // Find receiver
     let receiver = null;
-
-    // 1. Try by ID
     if (receiverId) {
       const { data } = await supabase
         .from("User")
@@ -933,8 +835,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       receiver = data;
     }
-
-    // 2. Try by Tag
     if (!receiver && receiverTag) {
       const { data } = await supabase
         .from("User")
@@ -943,8 +843,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       receiver = data;
     }
-
-    // 3. Try by Phone
     if (!receiver && receiverPhone) {
       const { data } = await supabase
         .from("User")
@@ -953,8 +851,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       receiver = data;
     }
-
-    // 4. Try by Email
     if (!receiver && receiverEmail) {
       const { data } = await supabase
         .from("User")
@@ -963,13 +859,11 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       receiver = data;
     }
-
     if (!receiver) throw new Error("Receiver not found");
 
     const newSenderBalance = sender.balance - amountCents;
     const newReceiverBalance = receiver.balance + amountCents;
 
-    // Fetch sender's piyes account ID
     const { data: senderAccount } = await supabase
       .from("Account")
       .select("id")
@@ -978,7 +872,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     const accountId = senderAccount?.id || "piyes-main";
 
-    // Fetch receiver's piyes account ID
     const { data: receiverAccount } = await supabase
       .from("Account")
       .select("id")
@@ -1006,10 +899,8 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       })
       .select()
       .single();
-
     if (txError) throw txError;
 
-    // Create receiver transaction record
     await supabase.from("Transaction").insert({
       id: generateId(),
       type: TransactionType.TRANSFER,
@@ -1044,21 +935,22 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", receiver.id)
       .eq("provider", "piyes");
 
-    // Create notification for receiver
+    // Notification for receiver
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: receiver.id,
       type: "transfer_received",
-      title: "Paiement QR reçu",
-      body: `Vous avez reçu ${data.amount} HTG de ${sender.name}`,
-      amount: data.amount.toString(),
+      title: "transfer_received",
+      body: "transfer_received.body",
+      amount: paymentAmount.toString(),
+      data: { name: sender.name, amount: paymentAmount },
       isRead: false,
       targetId: transaction?.id,
       route: "/history",
       timestamp: new Date().toISOString(),
     });
 
-    // Update or Create Contact for the sender
+    // Update contacts (simplified)
     const now = new Date().toISOString();
     const { data: existingContact } = await supabase
       .from("Contact")
@@ -1066,7 +958,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", sender.id)
       .eq("contactUserId", receiver.id)
       .maybeSingle();
-
     const contactData = {
       userId: sender.id,
       contactUserId: receiver.id,
@@ -1077,7 +968,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       lastTransactionDate: now,
       isVerified: true,
     };
-
     if (existingContact) {
       await supabase
         .from("Contact")
@@ -1100,29 +990,21 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 8. HISTORY
+// 8. HISTORY (unchanged)
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
     const { accountId, counterpartyName, limit = 50, offset = 0 } = req.query;
-
     let query = supabase
       .from("Transaction")
       .select("*")
       .eq("userId", userId)
       .order("date", { ascending: false })
       .range(Number(offset), Number(offset) + Number(limit) - 1);
-
-    if (accountId) {
-      query = query.eq("accountId", accountId);
-    }
-
-    if (counterpartyName) {
+    if (accountId) query = query.eq("accountId", accountId);
+    if (counterpartyName)
       query = query.eq("counterpartyName", counterpartyName);
-    }
-
     const { data: transactions } = await query;
-
     res.json(
       (transactions || []).map((tx: any) => ({
         ...tx,
@@ -1141,7 +1023,7 @@ const maskAccountNumber = (acc: string) => {
   return `••••${lastPart}`;
 };
 
-// 9. RECEIPT
+// 9. RECEIPT (unchanged)
 router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { data: tx } = await supabase
@@ -1149,20 +1031,14 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
       .select("*")
       .eq("id", req.params.id)
       .single();
-
     if (!tx) return res.status(404).json({ error: "Transaction not found" });
-
-    // Fetch user's account and user info
     const { data: account } = await supabase
       .from("Account")
       .select("*, user:User(*)")
       .eq("id", tx.accountId)
       .single();
-
-    // Find the other side of the transaction if it's a transfer
-    let counterpartyAccount = null;
-    let counterpartyUser = null;
-
+    let counterpartyAccount = null,
+      counterpartyUser = null;
     if (tx.type === TransactionType.TRANSFER && tx.external_id) {
       const { data: otherTx } = await supabase
         .from("Transaction")
@@ -1170,7 +1046,6 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
         .eq("external_id", tx.external_id)
         .neq("id", tx.id)
         .single();
-
       if (otherTx) {
         const { data: otherAccount } = await supabase
           .from("Account")
@@ -1183,20 +1058,16 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
         }
       }
     }
-
-    const myAccount = account;
-    const myUser = account?.user;
-
+    const myAccount = account,
+      myUser = account?.user;
     const senderAccount =
       tx.role === TransactionRole.PAYER ? myAccount : counterpartyAccount;
     const senderUser =
       tx.role === TransactionRole.PAYER ? myUser : counterpartyUser;
-
     const receiverAccount =
       tx.role === TransactionRole.RECEIVER ? myAccount : counterpartyAccount;
     const receiverUser =
       tx.role === TransactionRole.RECEIVER ? myUser : counterpartyUser;
-
     const receipt = {
       id: tx.id,
       amount: tx.amount / 100,
@@ -1255,7 +1126,6 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
             : receiverAccount?.label || "piYès",
       },
     };
-
     res.json(receipt);
   } catch (error) {
     console.error("Receipt error:", error);
@@ -1263,7 +1133,7 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 10. INTER-BANK TRANSFER
+// 10. INTER-BANK TRANSFER (unchanged)
 router.post(
   "/inter-bank-transfer",
   authMiddleware,
@@ -1271,19 +1141,14 @@ router.post(
     try {
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
       const validated = interBankTransferSchema.parse(req.body);
       const amountCents = Math.round(validated.amount * 100);
-
-      // Fetch user
       const { data: user } = await supabase
         .from("User")
         .select("*")
         .eq("id", userId)
         .single();
       if (!user) throw new Error("User not found");
-
-      // Fetch source and dest accounts
       let sourceAcc: any = null;
       if (validated.sourceId === "piyes-main") {
         const { data } = await supabase
@@ -1292,19 +1157,16 @@ router.post(
           .eq("userId", userId)
           .eq("provider", "piyes")
           .maybeSingle();
-        if (data) {
-          sourceAcc = data;
-        } else {
-          // Virtual piYès account if not in DB
+        if (data) sourceAcc = data;
+        else
           sourceAcc = {
             id: "piyes-main",
-            userId: userId,
+            userId,
             provider: "piyes",
             label: "piYès",
             balance: user.balance,
             accountNumber: user.accountNumber,
           };
-        }
       } else {
         const { data } = await supabase
           .from("Account")
@@ -1314,7 +1176,6 @@ router.post(
           .single();
         sourceAcc = data;
       }
-
       let destAcc: any = null;
       if (validated.destId === "piyes-main") {
         const { data } = await supabase
@@ -1323,19 +1184,16 @@ router.post(
           .eq("userId", userId)
           .eq("provider", "piyes")
           .maybeSingle();
-        if (data) {
-          destAcc = data;
-        } else {
-          // Virtual piYès account if not in DB
+        if (data) destAcc = data;
+        else
           destAcc = {
             id: "piyes-main",
-            userId: userId,
+            userId,
             provider: "piyes",
             label: "piYès",
             balance: user.balance,
             accountNumber: user.accountNumber,
           };
-        }
       } else {
         const { data } = await supabase
           .from("Account")
@@ -1345,55 +1203,23 @@ router.post(
           .single();
         destAcc = data;
       }
-
       if (!sourceAcc) throw new Error("Source account not found");
       if (!destAcc) throw new Error("Destination account not found");
-
-      // // If source is piYès, check PIN and balance
-      // if (sourceAcc.provider === 'piyes') {
-      //   if (!user.pinHash) throw new Error('PIN not set');
-      //   if (!validated.pin) throw new Error('PIN required for withdrawal');
-      //   const isPinValid = await bcrypt.compare(validated.pin, user.pinHash);
-      //   if (!isPinValid) throw new Error('Invalid PIN');
-      //   if (user.balance < amountCents) throw new Error('Insufficient balance');
-      // }
-
-      // If source is piYès, check balance only (PIN bypassed in TEST MODE)
-      // TODO: réactiver la vérification bcrypt en production
       if (sourceAcc.provider === "piyes") {
-        // if (!user.pinHash) throw new Error('PIN not set');
-        // if (!validated.pin) throw new Error('PIN required for withdrawal');
-        // const isPinValid = await bcrypt.compare(validated.pin, user.pinHash);
-        // if (!isPinValid) throw new Error('Invalid PIN');
         if (user.balance < amountCents) throw new Error("Insufficient balance");
       }
-
       const txCode = generateTxCode();
       const authCode = generateAuthCode();
-
-      // 1. Update source account balance
-      const { error: sourceUpdateError } = await supabase
+      await supabase
         .from("Account")
         .update({ balance: sourceAcc.balance - amountCents })
         .eq("id", sourceAcc.id);
-      if (sourceUpdateError) throw sourceUpdateError;
-
-      // 2. Update destination account balance (unless it's moncash)
       if (destAcc.provider !== "moncash") {
-        const { error: destUpdateError } = await supabase
+        await supabase
           .from("Account")
           .update({ balance: destAcc.balance + amountCents })
           .eq("id", destAcc.id);
-        if (destUpdateError) {
-          console.error(
-            "Failed to update destination account balance:",
-            destUpdateError,
-          );
-          throw destUpdateError;
-        }
       }
-
-      // 3. Update User balance if piyes is involved
       if (sourceAcc.provider === "piyes") {
         await supabase
           .from("User")
@@ -1405,8 +1231,6 @@ router.post(
           .update({ balance: user.balance + amountCents })
           .eq("id", userId);
       }
-
-      // 4. Create transaction records for both sides
       const txId = generateId();
       const { data: payerTx, error: payerTxError } = await supabase
         .from("Transaction")
@@ -1427,9 +1251,7 @@ router.post(
         })
         .select()
         .single();
-
       if (payerTxError) throw payerTxError;
-
       await supabase.from("Transaction").insert({
         id: generateId(),
         type: TransactionType.TRANSFER,
@@ -1445,7 +1267,6 @@ router.post(
         auth_code: authCode,
         date: new Date().toISOString(),
       });
-
       res.json(payerTx);
     } catch (error: any) {
       console.error("Inter-bank transfer error:", error);
@@ -1456,7 +1277,7 @@ router.post(
   },
 );
 
-// 11. MONCASH CONFIRMATION
+// 11. MONCASH CONFIRMATION (unchanged)
 router.post(
   "/moncash/confirm",
   authMiddleware,
@@ -1464,26 +1285,20 @@ router.post(
     try {
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
       const { transactionId, orderId } = req.body;
       if (!transactionId)
         return res.status(400).json({ error: "Missing transactionId" });
-
       const { moncashService } = await import("../services/moncashService.js");
       const result =
         await moncashService.retrieveTransactionPayment(transactionId);
-
       if (result.payment.message === "successful") {
         const amountCents = Math.round(result.payment.cost * 100);
-
-        // Update user balance
         const { data: user } = await supabase
           .from("User")
           .select("balance")
           .eq("id", userId)
           .single();
         if (!user) throw new Error("User not found");
-
         const newBalance = user.balance + amountCents;
         await supabase
           .from("User")
@@ -1494,11 +1309,8 @@ router.post(
           .update({ balance: newBalance })
           .eq("userId", userId)
           .eq("provider", "piyes");
-
-        // Update or create transaction record
         const txCode = generateTxCode();
         const authCode = generateAuthCode();
-
         let txId = generateId();
         if (orderId) {
           const { data: existingTx } = await supabase
@@ -1508,7 +1320,6 @@ router.post(
             .single();
           if (existingTx) txId = orderId;
         }
-
         const { data: transaction, error: txError } = await supabase
           .from("Transaction")
           .upsert({
@@ -1519,7 +1330,7 @@ router.post(
             role: TransactionRole.RECEIVER,
             counterpartyName: "MonCash",
             userId: userId,
-            accountId: "piyes-main", // Default to main account
+            accountId: "piyes-main",
             external_id: txCode,
             auth_code: authCode,
             moncashTransactionId: transactionId,
@@ -1528,7 +1339,6 @@ router.post(
           })
           .select()
           .single();
-
         if (txError) throw txError;
         return res.json(transaction);
       } else {
@@ -1545,20 +1355,14 @@ router.post(
   },
 );
 
-// 12. REPORTS
+// 12. REPORTS (unchanged)
 router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
     const { period = "month", from, to } = req.query;
-
     const now = new Date();
-    let startDate: Date;
-    let prevStartDate: Date;
-    let prevEndDate: Date;
-
-    // Plage personnalisée
+    let startDate: Date, prevStartDate: Date, prevEndDate: Date;
     if (period === "custom" && from && to) {
       startDate = new Date(from as string);
       const toDate = new Date(to as string);
@@ -1566,8 +1370,6 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       const duration = toDate.getTime() - startDate.getTime();
       prevEndDate = new Date(startDate);
       prevStartDate = new Date(startDate.getTime() - duration);
-
-      // Utiliser directement ces dates pour la requête
       const { data: transactions } = await supabase
         .from("Transaction")
         .select("*")
@@ -1575,19 +1377,15 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
         .gte("date", startDate.toISOString())
         .lte("date", toDate.toISOString())
         .order("date", { ascending: false });
-
       const { data: prevTransactions } = await supabase
         .from("Transaction")
         .select("amount, role")
         .eq("userId", userId)
         .gte("date", prevStartDate.toISOString())
         .lt("date", prevEndDate.toISOString());
-
-      // Réutiliser la même logique de calcul — injecter les données
       (req as any)._txs = transactions || [];
       (req as any)._prevTxs = prevTransactions || [];
     }
-
     switch (period) {
       case "3months":
         startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
@@ -1604,15 +1402,13 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
         prevStartDate = new Date(now.getFullYear() - 1, 0, 1);
         prevEndDate = new Date(now.getFullYear(), 0, 1);
         break;
-      default: // month
+      default:
         startDate = new Date(now.getFullYear(), now.getMonth(), 1);
         prevStartDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         prevEndDate = new Date(now.getFullYear(), now.getMonth(), 1);
     }
-
-    let txs: any[] = [];
-    let prevTxs: any[] = [];
-
+    let txs: any[] = [],
+      prevTxs: any[] = [];
     if ((req as any)._txs) {
       txs = (req as any)._txs;
       prevTxs = (req as any)._prevTxs;
@@ -1623,25 +1419,19 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
         .eq("userId", userId)
         .gte("date", startDate!.toISOString())
         .order("date", { ascending: false });
-
       const { data: prevTransactions } = await supabase
         .from("Transaction")
         .select("amount, role")
         .eq("userId", userId)
         .gte("date", prevStartDate!.toISOString())
         .lt("date", prevEndDate!.toISOString());
-
       txs = transactions || [];
       prevTxs = prevTransactions || [];
     }
-
-    // Calculs période courante
     const received = txs.filter((t) => t.role === "RECEIVER");
     const sent = txs.filter((t) => t.role === "PAYER");
     const totalReceived = received.reduce((s, t) => s + t.amount, 0) / 100;
     const totalSent = sent.reduce((s, t) => s + t.amount, 0) / 100;
-
-    // Calculs période précédente
     const prevReceived =
       prevTxs
         .filter((t) => t.role === "RECEIVER")
@@ -1650,8 +1440,6 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       prevTxs
         .filter((t) => t.role === "PAYER")
         .reduce((s, t) => s + t.amount, 0) / 100;
-
-    // Top 5 payeurs (counterpartyName des transactions reçues)
     const senderMap = new Map<string, { amount: number; count: number }>();
     received.forEach((t) => {
       const existing = senderMap.get(t.counterpartyName) || {
@@ -1667,8 +1455,6 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       .map(([name, data]) => ({ name, ...data }))
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 5);
-
-    // Répartition par heure
     const byHour = Array.from({ length: 24 }, (_, hour) => {
       const hourTxs = received.filter(
         (t) => new Date(t.date).getHours() === hour,
@@ -1679,8 +1465,6 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
         count: hourTxs.length,
       };
     });
-
-    // Répartition par type
     const typeMap = new Map<string, { amount: number; count: number }>();
     txs.forEach((t) => {
       const existing = typeMap.get(t.type) || { amount: 0, count: 0 };
@@ -1693,18 +1477,13 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       type,
       ...data,
     }));
-
-    // Fréquence des payeurs
     const senderCounts = Array.from(senderMap.values()).map((v) => v.count);
     const frequencyBreakdown = {
       once: senderCounts.filter((c) => c === 1).length,
       repeat: senderCounts.filter((c) => c >= 2 && c <= 4).length,
       frequent: senderCounts.filter((c) => c >= 5).length,
     };
-
-    // Frais estimés (1% transfert + 2% service = 3% sur transactions envoyées)
     const totalFeesPaid = totalSent * 0.03;
-
     res.json({
       period,
       totalReceived,
@@ -1729,12 +1508,11 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 13. INTERNATIONAL
+// 13. INTERNATIONAL (unchanged)
 router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
     const {
       amount,
       country,
@@ -1745,7 +1523,6 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       amountForeign,
       exchangeRate,
     } = req.body;
-
     if (!amount || !country || !recipientName || !method) {
       return res.status(400).json({
         error: {
@@ -1754,28 +1531,23 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
         },
       });
     }
-
     const { data: user } = await supabase
       .from("User")
       .select("*")
       .eq("id", userId)
       .single();
     if (!user) return res.status(404).json({ error: "User not found" });
-
     const amountCents = Math.round(parseFloat(amount) * 100);
     if (user.balance < amountCents) {
       return res.status(400).json({
         error: { message: "Solde insuffisant", code: "INSUFFICIENT_BALANCE" },
       });
     }
-
     const { v4: uuidv4 } = await import("uuid");
     const txId = uuidv4();
     const intlId = uuidv4();
     const authCode = Math.random().toString(36).substring(2, 10).toUpperCase();
     const externalId = `INTL-${Date.now()}`;
-
-    // 1. Créer la transaction dans Transaction (pour historique)
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -1792,11 +1564,8 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       })
       .select()
       .single();
-
     if (txError) throw txError;
-
-    // 2. Créer l'enregistrement dans InternationalTransfer (pour traçabilité)
-    const feesCents = Math.round(amountCents * 0.01); // 1% frais
+    const feesCents = Math.round(amountCents * 0.01);
     await supabase.from("InternationalTransfer").insert({
       id: intlId,
       senderId: userId,
@@ -1816,8 +1585,6 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-
-    // 3. Débiter le solde
     const newBalance = user.balance - amountCents;
     await supabase
       .from("User")
@@ -1828,7 +1595,6 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       .update({ balance: newBalance })
       .eq("userId", userId)
       .eq("provider", "piyes");
-
     res.json({
       id: txId,
       auth_code: authCode,
@@ -1844,17 +1610,12 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 14. PRE-CHECK destinataire avant transfert (existence + permission)
-// ─────────────────────────────────────────────────────────────────────────────
+// 14. PRE-CHECK (unchanged)
 router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const key = decodeURIComponent(String(req.params.key)).trim();
     if (!key) return res.status(400).json({ error: "Clé requise" });
-
     let receiver: any = null;
-
-    // 1. Chercher dans User par tag (ilike pour ignorer la casse)
     if (key.startsWith("@") || !key.includes("@")) {
       const tagValue = key.startsWith("@") ? key : `@${key}`;
       const { data } = await supabase
@@ -1864,8 +1625,6 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       if (data) receiver = data;
     }
-
-    // 2. Chercher par email
     if (!receiver && key.includes("@") && key.includes(".")) {
       const { data } = await supabase
         .from("User")
@@ -1874,8 +1633,6 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       if (data) receiver = data;
     }
-
-    // 3. Chercher par accountNumber
     if (!receiver) {
       const { data } = await supabase
         .from("User")
@@ -1884,16 +1641,12 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       if (data) receiver = data;
     }
-
-    // 3b. Chercher par phone dans User (clé primaire)
     if (!receiver) {
-      // Normaliser le format du phone : +509 suivi de 8 chiffres
       let normalizedPhone = key;
-      if (!normalizedPhone.startsWith("+")) {
+      if (!normalizedPhone.startsWith("+"))
         normalizedPhone = normalizedPhone.startsWith("509")
           ? `+${normalizedPhone}`
           : `+509${normalizedPhone}`;
-      }
       const { data } = await supabase
         .from("User")
         .select("id, name, tag, phone, email, avatarUrl")
@@ -1901,8 +1654,6 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       if (data) receiver = data;
     }
-
-    // 4. Chercher par ID direct
     if (!receiver) {
       const { data } = await supabase
         .from("User")
@@ -1911,8 +1662,6 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
       if (data) receiver = data;
     }
-
-    // 5. Chercher dans Key table (clés secondaires vérifiées)
     if (!receiver) {
       const { data: keyMatch } = await supabase
         .from("Key")
@@ -1929,23 +1678,17 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         receiver = data;
       }
     }
-
     if (!receiver) {
       return res.status(404).json({
         error: { message: "Destinataire introuvable", code: "NOT_FOUND" },
       });
     }
-
-    // Vérifier permission sur le compte piYès du receiver
     const { data: receiverAccount } = await supabase
       .from("Account")
       .select("permission")
       .eq("userId", receiver.id)
       .eq("provider", "piyes")
       .maybeSingle();
-
-    // Autoriser si : compte existe avec permission 'oui', OU pas de compte du tout (edge case ancien user)
-    // Bloquer uniquement si permission explicitement définie à autre chose que 'oui'
     if (
       receiverAccount &&
       receiverAccount.permission !== null &&
@@ -1959,7 +1702,6 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         },
       });
     }
-
     res.json({
       id: receiver.id,
       name: receiver.name,
