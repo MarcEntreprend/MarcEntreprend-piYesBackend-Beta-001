@@ -66,6 +66,7 @@ router.get("/sync", authMiddleware, async (req: AuthRequest, res) => {
         data: {
           route: n.route,
           targetId: n.targetId,
+          ...(n.data || {}), // conserver les données existantes (ex: name, amount, dueDate)
         },
       }));
 
