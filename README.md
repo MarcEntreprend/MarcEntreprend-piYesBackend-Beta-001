@@ -60,8 +60,10 @@ npm run dev
 
 cd C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-backend
 
+npm install
 npm run build
 vercel --prod
+npm run dev
 
 ## Après vercel --prod, VÉRIFIER LE DÉPLOIEMENT
 
