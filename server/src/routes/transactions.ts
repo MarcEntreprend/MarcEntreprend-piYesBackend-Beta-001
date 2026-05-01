@@ -286,17 +286,45 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
     const schedulerId = req.body.schedulerId;
     if (schedulerId) {
       const paidAt = new Date().toISOString();
+
+      // 1. Récupérer le rappel original pour obtenir son qrToken
+      const { data: originalSchedule, error: fetchError } = await supabase
+        .from("ScheduledPayment")
+        .select("qrToken, amount")
+        .eq("id", schedulerId)
+        .single();
+
+      if (fetchError) {
+        console.error("Failed to fetch original schedule:", fetchError);
+      }
+
+      // 2. Marquer le rappel côté payeur (outgoing)
       await supabase
         .from("ScheduledPayment")
         .update({ status: "paid", paidAt, updatedAt: paidAt })
         .eq("id", schedulerId);
-      await supabase
-        .from("ScheduledPayment")
-        .update({ status: "paid", paidAt, updatedAt: paidAt })
-        .eq("payerUserId", sender.id)
-        .eq("receiverUserId", receiver.id)
-        .eq("type", "incoming")
-        .eq("status", "confirmed");
+
+      // 3. Marquer le rappel correspondant côté receiver (incoming) en utilisant le qrToken
+      if (originalSchedule?.qrToken) {
+        await supabase
+          .from("ScheduledPayment")
+          .update({ status: "paid", paidAt, updatedAt: paidAt })
+          .eq("qrToken", originalSchedule.qrToken)
+          .eq("type", "incoming")
+          .eq("status", "confirmed");
+      } else {
+        // Fallback sécurisé : utiliser le montant comme critère supplémentaire
+        await supabase
+          .from("ScheduledPayment")
+          .update({ status: "paid", paidAt, updatedAt: paidAt })
+          .eq("payerUserId", sender.id)
+          .eq("receiverUserId", receiver.id)
+          .eq("type", "incoming")
+          .eq("status", "confirmed")
+          .eq("amount", amountCents); // ← ajout du montant pour préciser
+      }
+
+      // 4. Notification (inchangée)
       await supabase.from("Notification").insert({
         id: generateId(),
         userId: receiver.id,
@@ -311,7 +339,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         timestamp: paidAt,
       });
     }
-
     const nameParts = receiver.name.trim().split(/\s+/);
     const recipientInitials =
       nameParts.length > 1
