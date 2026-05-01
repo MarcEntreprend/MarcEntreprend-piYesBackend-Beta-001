@@ -14,6 +14,7 @@ import {
   interBankTransferSchema,
 } from "../../../shared/schemas.js";
 import { TransactionType, TransactionRole } from "../../../shared/types.js";
+import { computeTotalFees } from "../services/feeTransaction.js";
 
 const router = express.Router();
 
@@ -1518,7 +1519,9 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       repeat: senderCounts.filter((c) => c >= 2 && c <= 4).length,
       frequent: senderCounts.filter((c) => c >= 5).length,
     };
-    const totalFeesPaid = totalSent * 0.03;
+    // Récupérer les transactions sortantes (PAYER) pour le calcul des frais
+    const sentTransactions = txs.filter((t: any) => t.role === "PAYER");
+    const totalFeesPaid = computeTotalFees(sentTransactions);
     res.json({
       period,
       totalReceived,
