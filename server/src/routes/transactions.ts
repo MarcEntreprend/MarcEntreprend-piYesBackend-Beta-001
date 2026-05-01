@@ -116,6 +116,16 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     const accountId = senderAccount?.id || "piyes-main";
 
+    // Gestion description : chaîne vide si l'utilisateur n'a rien saisi (car colonne NOT NULL)
+    let description = validated.description;
+    if (
+      description === undefined ||
+      description === null ||
+      description === ""
+    ) {
+      description = "";
+    }
+
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
@@ -125,7 +135,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         id: generateId(),
         type: TransactionType.TRANSFER,
         amount: amountCents,
-        description: validated.description || `Transfer to ${receiver.name}`,
+        description,
         role: TransactionRole.PAYER,
         counterpartyName: receiver.name,
         userId: sender.id,
@@ -152,7 +162,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       id: receiverTxId,
       type: TransactionType.TRANSFER,
       amount: amountCents,
-      description: validated.description || `Transfer from ${sender.name}`,
+      description: validated.description || null, // pareil
       role: TransactionRole.RECEIVER,
       counterpartyName: sender.name,
       userId: receiver.id,
@@ -162,7 +172,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       date: new Date().toISOString(),
     });
 
-    // Update balances
+    // Update balances (same as before)
     await supabase
       .from("User")
       .update({
@@ -189,7 +199,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", receiver.id)
       .eq("provider", "piyes");
 
-    // Notification for receiver
+    // Notifications (same)
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: receiver.id,
@@ -204,7 +214,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    // Notification for sender (payer)
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: sender.id,
@@ -219,9 +228,8 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    // Update contacts
+    // Contacts update (same)
     const now = new Date().toISOString();
-    // ... (contact logic unchanged, keep as is)
     const { data: existingContact } = await supabase
       .from("Contact")
       .select("id")
@@ -282,29 +290,22 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
-    // If payment from scheduled reminder
+    // Scheduled reminder handling (same)
     const schedulerId = req.body.schedulerId;
     if (schedulerId) {
       const paidAt = new Date().toISOString();
-
-      // 1. Récupérer le rappel original pour obtenir son qrToken
       const { data: originalSchedule, error: fetchError } = await supabase
         .from("ScheduledPayment")
         .select("qrToken, amount")
         .eq("id", schedulerId)
         .single();
-
       if (fetchError) {
         console.error("Failed to fetch original schedule:", fetchError);
       }
-
-      // 2. Marquer le rappel côté payeur (outgoing)
       await supabase
         .from("ScheduledPayment")
         .update({ status: "paid", paidAt, updatedAt: paidAt })
         .eq("id", schedulerId);
-
-      // 3. Marquer le rappel correspondant côté receiver (incoming) en utilisant le qrToken
       if (originalSchedule?.qrToken) {
         await supabase
           .from("ScheduledPayment")
@@ -313,7 +314,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
           .eq("type", "incoming")
           .eq("status", "confirmed");
       } else {
-        // Fallback sécurisé : utiliser le montant comme critère supplémentaire
         await supabase
           .from("ScheduledPayment")
           .update({ status: "paid", paidAt, updatedAt: paidAt })
@@ -321,10 +321,8 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
           .eq("receiverUserId", receiver.id)
           .eq("type", "incoming")
           .eq("status", "confirmed")
-          .eq("amount", amountCents); // ← ajout du montant pour préciser
+          .eq("amount", amountCents);
       }
-
-      // 4. Notification (inchangée)
       await supabase.from("Notification").insert({
         id: generateId(),
         userId: receiver.id,
@@ -339,6 +337,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         timestamp: paidAt,
       });
     }
+
     const nameParts = receiver.name.trim().split(/\s+/);
     const recipientInitials =
       nameParts.length > 1
@@ -899,6 +898,15 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     const accountId = senderAccount?.id || "piyes-main";
 
+    let description = req.body.description;
+    if (
+      description === undefined ||
+      description === null ||
+      description === ""
+    ) {
+      description = "";
+    }
+
     const { data: receiverAccount } = await supabase
       .from("Account")
       .select("id")
@@ -915,7 +923,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
         id: generateId(),
         type: TransactionType.TRANSFER,
         amount: amountCents,
-        description: `QR Payment to ${receiver.name}`,
+        description: null, // pas de description par défaut pour QR
         role: TransactionRole.PAYER,
         counterpartyName: receiver.name,
         userId: sender.id,
