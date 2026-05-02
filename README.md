@@ -32,6 +32,7 @@ piyes-wallet-backend/
 │ │ └── user.ts
 │ │
 │ └── services/ # Services métier backend
+│ ├── feeTransaction.ts
 │ ├── moncashService.ts
 │ └── otpService.ts
 │
