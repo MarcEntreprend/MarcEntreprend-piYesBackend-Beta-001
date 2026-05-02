@@ -51,6 +51,7 @@ piyes-wallet-backend/
 2. Run the app:
    `npm run dev`
 
+cd C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-backend
 npm install
 npm run dev
 

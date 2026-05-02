@@ -390,3 +390,22 @@ export const getInitials = (name: string): string => {
   }
   return parts[0][0].toUpperCase();
 };
+
+export interface ReportData {
+  period: string;
+  totalReceived: number;
+  totalSent: number;
+  netBalance: number;
+  transactionCount: number;
+  receivedCount: number;
+  sentCount: number;
+  previousPeriodReceived: number;
+  previousPeriodSent: number;
+  topSenders: Array<{ name: string; amount: number; count: number }>;
+  byHour: Array<{ hour: number; amount: number; count: number }>;
+  byType: Array<{ type: string; amount: number; count: number }>;
+  avgTransactionAmount: number;
+  totalFeesPaid: number;
+  savingsVsBank: number;
+  frequencyBreakdown: { once: number; repeat: number; frequent: number };
+}
