@@ -1249,64 +1249,60 @@ router.post(
       }
       const txCode = generateTxCode();
       const authCode = generateAuthCode();
-      await supabase
-        .from("Account")
-        .update({ balance: sourceAcc.balance - amountCents })
-        .eq("id", sourceAcc.id);
-      if (destAcc.provider !== "moncash") {
-        await supabase
-          .from("Account")
-          .update({ balance: destAcc.balance + amountCents })
-          .eq("id", destAcc.id);
-      }
-      if (sourceAcc.provider === "piyes") {
-        await supabase
-          .from("User")
-          .update({ balance: user.balance - amountCents })
-          .eq("id", userId);
-      } else if (destAcc.provider === "piyes") {
-        await supabase
-          .from("User")
-          .update({ balance: user.balance + amountCents })
-          .eq("id", userId);
-      }
-      const txId = generateId();
-      const { data: payerTx, error: payerTxError } = await supabase
+
+      // Déterminer le rôle de l'utilisateur selon le sens du transfert
+      const isUserSource = sourceAcc.provider === "piyes";
+      const userRole = isUserSource
+        ? TransactionRole.PAYER
+        : TransactionRole.RECEIVER;
+      const counterpartyRole = isUserSource
+        ? TransactionRole.RECEIVER
+        : TransactionRole.PAYER;
+
+      // Transaction pour l'utilisateur (compte piYès)
+      const userTxId = generateId();
+      const { data: userTx, error: userTxError } = await supabase
         .from("Transaction")
         .insert({
-          id: txId,
-          type: TransactionType.TRANSFER,
+          id: userTxId,
+          type: TransactionType.INTERBANK_OUT,
           amount: amountCents,
           description:
             validated.note ||
-            `Transfert inter-bancaire: ${sourceAcc.label} -> ${destAcc.label}`,
-          role: TransactionRole.PAYER,
-          counterpartyName: destAcc.label,
+            `Transfert inter-bancaire: ${sourceAcc.label} ↔ ${destAcc.label}`,
+          role: userRole,
+          counterpartyName: isUserSource ? destAcc.label : sourceAcc.label,
           userId: userId,
-          accountId: sourceAcc.id,
+          accountId: isUserSource ? sourceAcc.id : destAcc.id,
           external_id: txCode,
           auth_code: authCode,
           date: new Date().toISOString(),
         })
         .select()
         .single();
-      if (payerTxError) throw payerTxError;
-      await supabase.from("Transaction").insert({
-        id: generateId(),
-        type: TransactionType.TRANSFER,
-        amount: amountCents,
-        description:
-          validated.note ||
-          `Transfert inter-bancaire: ${sourceAcc.label} -> ${destAcc.label}`,
-        role: TransactionRole.RECEIVER,
-        counterpartyName: sourceAcc.label,
-        userId: userId,
-        accountId: destAcc.id,
-        external_id: txCode,
-        auth_code: authCode,
-        date: new Date().toISOString(),
-      });
-      res.json(payerTx);
+
+      if (userTxError) throw userTxError;
+
+      // Transaction pour l'autre compte (externe)
+      const otherUserId = isUserSource ? destAcc.userId : sourceAcc.userId;
+      if (otherUserId) {
+        await supabase.from("Transaction").insert({
+          id: generateId(),
+          type: TransactionType.INTERBANK_OUT,
+          amount: amountCents,
+          description:
+            validated.note ||
+            `Transfert inter-bancaire: ${sourceAcc.label} ↔ ${destAcc.label}`,
+          role: counterpartyRole,
+          counterpartyName: isUserSource ? sourceAcc.label : destAcc.label,
+          userId: otherUserId,
+          accountId: isUserSource ? destAcc.id : sourceAcc.id,
+          external_id: txCode,
+          auth_code: authCode,
+          date: new Date().toISOString(),
+        });
+      }
+      res.json(userTx);
     } catch (error: any) {
       console.error("Inter-bank transfer error:", error);
       res
@@ -1560,6 +1556,8 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       sentCount: sent.length,
       previousPeriodReceived: prevReceived,
       previousPeriodSent: prevSent,
+      totalBankFeesIfTraditional,
+      simulatedMoncashFees,
       topSenders,
       byHour,
       byType,
