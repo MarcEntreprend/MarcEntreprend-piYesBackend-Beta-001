@@ -1391,7 +1391,7 @@ router.post(
   },
 );
 
-// 12. REPORTS (unchanged)
+// 12. REPORTS
 router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -1522,6 +1522,18 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
     // Récupérer les transactions sortantes (PAYER) pour le calcul des frais
     const sentTransactions = txs.filter((t: any) => t.role === "PAYER");
     const totalFeesPaid = computeTotalFees(sentTransactions);
+
+    // --- Calcul de l'économie vs banques traditionnelles ---
+    // Basé sur la moyenne des frais de virement interbancaire SPIH (≈ 85 G. par transaction)
+    const AVG_BANK_FEE = 85; // HTG par virement
+    const sentInterbank = sent.filter((t: any) => t.type === "INTERBANK_OUT");
+    const interbankCount = sentInterbank.length;
+    const totalBankFeesIfTraditional = interbankCount * AVG_BANK_FEE;
+    const totalInterbankFeesPaid = computeTotalFees(
+      interbankCount > 0 ? sentInterbank : [],
+    );
+    const savingsVsBank = totalBankFeesIfTraditional - totalInterbankFeesPaid;
+
     res.json({
       period,
       totalReceived,
@@ -1538,6 +1550,7 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       avgTransactionAmount:
         txs.length > 0 ? (totalReceived + totalSent) / txs.length : 0,
       totalFeesPaid,
+      savingsVsBank,
       frequencyBreakdown,
     });
   } catch (error) {
