@@ -921,13 +921,14 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
 
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
-    const { data: transaction, error: txError } = await supabase
+    // Insertion de la transaction PAYER
+    const { data: transaction, error: payerError } = await supabase
       .from("Transaction")
       .insert({
         id: generateId(),
         type: TransactionType.TRANSFER,
         amount: amountCents,
-        description: null, // pas de description par défaut pour QR
+        description: "",
         role: TransactionRole.PAYER,
         counterpartyName: receiver.name,
         userId: sender.id,
@@ -938,13 +939,18 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       })
       .select()
       .single();
-    if (txError) throw txError;
 
-    await supabase.from("Transaction").insert({
+    if (payerError) {
+      console.error("[SCAN] Failed to insert payer transaction:", payerError);
+      throw payerError;
+    }
+
+    // Insertion de la transaction RECEIVER avec vérification d'erreur
+    const { error: receiverError } = await supabase.from("Transaction").insert({
       id: generateId(),
       type: TransactionType.TRANSFER,
       amount: amountCents,
-      description: `QR Payment from ${sender.name}`,
+      description: "Paiement par QR Code",
       role: TransactionRole.RECEIVER,
       counterpartyName: sender.name,
       userId: receiver.id,
@@ -953,6 +959,16 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       auth_code: authCode,
       date: new Date().toISOString(),
     });
+
+    if (receiverError) {
+      console.error(
+        "[SCAN] Failed to insert receiver transaction:",
+        receiverError,
+      );
+      // ROLLBACK : supprimer la transaction PAYER déjà insérée
+      await supabase.from("Transaction").delete().eq("id", transaction.id);
+      throw receiverError;
+    }
 
     await supabase
       .from("User")
