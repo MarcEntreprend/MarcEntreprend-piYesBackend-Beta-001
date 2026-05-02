@@ -14,7 +14,10 @@ import {
   interBankTransferSchema,
 } from "../../../shared/schemas.js";
 import { TransactionType, TransactionRole } from "../../../shared/types.js";
-import { computeTotalFees } from "../services/feeTransaction.js";
+import {
+  computeTotalFees,
+  computeSimulatedMoncashFees,
+} from "../services/feeTransaction.js";
 
 const router = express.Router();
 
@@ -1534,6 +1537,13 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
     );
     const savingsVsBank = totalBankFeesIfTraditional - totalInterbankFeesPaid;
 
+    // --- Calcul de l'économie simulée vs MonCash ---
+    // Basé sur le barème officiel MonCash pour les transferts P2P
+    const p2pSent = sent.filter((t: any) => t.type === "TRANSFER");
+    const simulatedMoncashFees = computeSimulatedMoncashFees(p2pSent);
+    // Frais piYès sur P2P = 0, donc économie = frais MonCash simulés
+    const savingsVsMoncash = simulatedMoncashFees;
+
     res.json({
       period,
       totalReceived,
@@ -1552,6 +1562,7 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
       totalFeesPaid,
       savingsVsBank,
       frequencyBreakdown,
+      savingsVsMoncash,
     });
   } catch (error) {
     console.error("Reports error:", error);
