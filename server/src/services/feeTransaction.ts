@@ -79,26 +79,26 @@ export function computeTotalFees(
 }
 
 /**
- * Calcule les frais MonCash pour un montant donné (en centimes)
+ * Calcule les frais MonCash pour un montant donné
  * Basé sur le barème officiel MonCash (transfert MonCash → MonCash)
  */
 export function computeMoncashFee(amountCents: number): number {
   const amountG = amountCents / 100;
-
-  if (amountG < 250) return 0;
-  if (amountG < 500) return 5;
-  if (amountG < 1000) return 10;
-  if (amountG < 2000) return 25;
-  if (amountG < 4000) return 35;
-  if (amountG < 8000) return 50;
-  if (amountG < 12000) return 60;
-  if (amountG < 20000) return 0; // tranche 12k-20k = 0 G.
-  if (amountG < 40000) return 75;
-  if (amountG < 60000) return 100;
-  if (amountG < 75000) return 120;
-  return 130; // 75k-100k
+  let feeG = 0;
+  if (amountG < 250) feeG = 0;
+  else if (amountG < 500) feeG = 5;
+  else if (amountG < 1000) feeG = 10;
+  else if (amountG < 2000) feeG = 25;
+  else if (amountG < 4000) feeG = 35;
+  else if (amountG < 8000) feeG = 50;
+  else if (amountG < 12000) feeG = 60;
+  else if (amountG < 20000) feeG = 0;
+  else if (amountG < 40000) feeG = 75;
+  else if (amountG < 60000) feeG = 100;
+  else if (amountG < 75000) feeG = 120;
+  else feeG = 130;
+  return feeG * 100; // retourne des centimes
 }
-
 /**
  * Calcule les frais MonCash pour différents types de transaction
  */
@@ -107,70 +107,70 @@ export function computeMoncashFeeByTransactionType(tx: {
   amount: number;
 }): number {
   const amountG = tx.amount / 100;
+  let feeG = 0;
 
   switch (tx.type) {
     case "TRANSFER":
-      // Barème MonCash-à-MonCash
-      if (amountG < 250) return 0;
-      if (amountG < 500) return 5;
-      if (amountG < 1000) return 10;
-      if (amountG < 2000) return 25;
-      if (amountG < 4000) return 35;
-      if (amountG < 8000) return 50;
-      if (amountG < 12000) return 60;
-      if (amountG < 20000) return 0;
-      if (amountG < 40000) return 75;
-      if (amountG < 60000) return 100;
-      if (amountG < 75000) return 120;
-      return 130;
-
+      if (amountG < 250) feeG = 0;
+      else if (amountG < 500) feeG = 5;
+      else if (amountG < 1000) feeG = 10;
+      else if (amountG < 2000) feeG = 25;
+      else if (amountG < 4000) feeG = 35;
+      else if (amountG < 8000) feeG = 50;
+      else if (amountG < 12000) feeG = 60;
+      else if (amountG < 20000) feeG = 0;
+      else if (amountG < 40000) feeG = 75;
+      else if (amountG < 60000) feeG = 100;
+      else if (amountG < 75000) feeG = 120;
+      else feeG = 130;
+      break;
     case "DEPOSIT":
-      // Frais de Dépôt sur Votre Compte
-      if (amountG >= 12000 && amountG < 20000) return 70;
-      return 0;
-
+      if (amountG >= 12000 && amountG < 20000) feeG = 70;
+      else feeG = 0;
+      break;
     case "WITHDRAW":
-      // Frais de Retrait
-      if (amountG < 100) return 6;
-      if (amountG < 250) return 12;
-      if (amountG < 500) return 15;
-      if (amountG < 1000) return 40;
-      if (amountG < 2000) return 65;
-      if (amountG < 4000) return 115;
-      if (amountG < 8000) return 185;
-      if (amountG < 12000) return 275;
-      if (amountG < 20000) return 380;
-      if (amountG < 40000) return 640;
-      if (amountG < 60000) return 1050;
-      if (amountG < 75000) return 1400;
-      return 1600;
-
+      if (amountG < 100) feeG = 6;
+      else if (amountG < 250) feeG = 12;
+      else if (amountG < 500) feeG = 15;
+      else if (amountG < 1000) feeG = 40;
+      else if (amountG < 2000) feeG = 65;
+      else if (amountG < 4000) feeG = 115;
+      else if (amountG < 8000) feeG = 185;
+      else if (amountG < 12000) feeG = 275;
+      else if (amountG < 20000) feeG = 380;
+      else if (amountG < 40000) feeG = 640;
+      else if (amountG < 60000) feeG = 1050;
+      else if (amountG < 75000) feeG = 1400;
+      else feeG = 1600;
+      break;
     case "INTERBANK_OUT":
-      // Frais Kont Bankè (similaire retrait pour MVP)
-      if (amountG < 1000) return 65;
-      if (amountG < 2000) return 65;
-      if (amountG < 4000) return 115;
-      if (amountG < 8000) return 185;
-      if (amountG < 12000) return 275;
-      if (amountG < 20000) return 380;
-      if (amountG < 40000) return 640;
-      if (amountG < 60000) return 1050;
-      if (amountG < 75000) return 1400;
-      return 1600;
-
+      if (amountG < 1000) feeG = 65;
+      else if (amountG < 2000) feeG = 65;
+      else if (amountG < 4000) feeG = 115;
+      else if (amountG < 8000) feeG = 185;
+      else if (amountG < 12000) feeG = 275;
+      else if (amountG < 20000) feeG = 380;
+      else if (amountG < 40000) feeG = 640;
+      else if (amountG < 60000) feeG = 1050;
+      else if (amountG < 75000) feeG = 1400;
+      else feeG = 1600;
+      break;
     default:
-      return 0; // RECHARGE, INTERNATIONAL, etc.
+      feeG = 0;
   }
+  return feeG * 100; // retourne des centimes
 }
 
 /**
  * Calcule les frais MonCash simulés pour une liste de transactions (tous types pertinents)
+ * additionne les centimes et divise par 100 pour obtenir des gourdes
  */
 export function computeSimulatedMoncashFees(
   transactions: Array<{ type: string; amount: number }>,
 ): number {
-  const totalFeeCents = transactions.reduce((sum, tx) => {
-    return sum + computeMoncashFeeByTransactionType(tx);
-  }, 0);
+  const totalFeeCents = transactions.reduce(
+    (sum, tx) => sum + computeMoncashFeeByTransactionType(tx),
+    0,
+  );
   return totalFeeCents / 100;
 }
