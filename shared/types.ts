@@ -407,5 +407,6 @@ export interface ReportData {
   avgTransactionAmount: number;
   totalFeesPaid: number;
   savingsVsBank: number;
+  savingsVsMoncash: number;
   frequencyBreakdown: { once: number; repeat: number; frequent: number };
 }
