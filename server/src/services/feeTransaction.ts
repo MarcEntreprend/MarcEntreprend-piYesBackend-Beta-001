@@ -77,3 +77,36 @@ export function computeTotalFees(
   }, 0);
   return totalFeeCents / 100; // conversion en gourdes
 }
+
+/**
+ * Calcule les frais MonCash pour un montant donné (en centimes)
+ * Basé sur le barème officiel MonCash (transfert MonCash → MonCash)
+ */
+export function computeMoncashFee(amountCents: number): number {
+  const amountG = amountCents / 100;
+
+  if (amountG < 250) return 0;
+  if (amountG < 500) return 5;
+  if (amountG < 1000) return 10;
+  if (amountG < 2000) return 25;
+  if (amountG < 4000) return 35;
+  if (amountG < 8000) return 50;
+  if (amountG < 12000) return 60;
+  if (amountG < 20000) return 0; // tranche 12k-20k = 0 G.
+  if (amountG < 40000) return 75;
+  if (amountG < 60000) return 100;
+  if (amountG < 75000) return 120;
+  return 130; // 75k-100k
+}
+
+/**
+ * Calcule les frais MonCash simulés pour une liste de transactions P2P
+ */
+export function computeSimulatedMoncashFees(
+  transactions: Array<{ amount: number }>,
+): number {
+  const totalFeeCents = transactions.reduce((sum, tx) => {
+    return sum + computeMoncashFee(tx.amount);
+  }, 0);
+  return totalFeeCents / 100; // conversion en gourdes
+}
