@@ -1537,10 +1537,16 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
     );
     const savingsVsBank = totalBankFeesIfTraditional - totalInterbankFeesPaid;
 
-    // --- Calcul de l'économie simulée vs MonCash ---
-    // Basé sur le barème officiel MonCash pour les transferts P2P
-    const p2pSent = sent.filter((t: any) => t.type === "TRANSFER");
-    const simulatedMoncashFees = computeSimulatedMoncashFees(p2pSent);
+    // Simulation MonCash sur TOUTES les transactions sortantes concernées
+    const moncashRelevantSent = sent.filter(
+      (t: any) =>
+        t.type === "TRANSFER" ||
+        t.type === "DEPOSIT" ||
+        t.type === "WITHDRAW" ||
+        t.type === "INTERBANK_OUT",
+    );
+    const simulatedMoncashFees =
+      computeSimulatedMoncashFees(moncashRelevantSent);
     // Frais piYès sur P2P = 0, donc économie = frais MonCash simulés
     const savingsVsMoncash = simulatedMoncashFees;
 
