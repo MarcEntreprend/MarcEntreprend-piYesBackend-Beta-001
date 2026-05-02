@@ -144,19 +144,8 @@ export function computeMoncashFeeByTransactionType(tx: {
       else feeG = 1600;
       break;
     case "INTERBANK_OUT":
-      if (amountG < 1000) feeG = 65;
-      else if (amountG < 2000) feeG = 65;
-      else if (amountG < 4000) feeG = 115;
-      else if (amountG < 8000) feeG = 185;
-      else if (amountG < 12000) feeG = 275;
-      else if (amountG < 20000) feeG = 380;
-      else if (amountG < 40000) feeG = 640;
-      else if (amountG < 60000) feeG = 1050;
-      else if (amountG < 75000) feeG = 1400;
-      else feeG = 1600;
-      break;
-    default:
-      feeG = 0;
+      // MonCash ne facture pas les transferts interbancaires depuis piYès
+      return 0;
   }
   return feeG * 100; // retourne des centimes
 }
