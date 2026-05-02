@@ -8,6 +8,7 @@ export enum TransactionType {
   RECHARGE = "RECHARGE",
   REQUEST = "REQUEST",
   SCHEDULED = "SCHEDULED",
+  INTERBANK_OUT = "INTERBANK_OUT",
 }
 
 export enum TransactionRole {
@@ -408,5 +409,7 @@ export interface ReportData {
   totalFeesPaid: number;
   savingsVsBank: number;
   savingsVsMoncash: number;
+  totalBankFeesIfTraditional: number;
+  simulatedMoncashFees: number;
   frequencyBreakdown: { once: number; repeat: number; frequent: number };
 }
