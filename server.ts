@@ -41,7 +41,7 @@ async function initializeApp() {
     "http://localhost:5173",
     "http://localhost:4173",
     "http://localhost:3000",
-    "http://192.168.15.2:5173",
+    "http://192.168.15.4:5173",
     process.env.FRONTEND_URL || "",
     "capacitor://localhost",
     "http://capacitor.localhost",
@@ -52,6 +52,13 @@ async function initializeApp() {
     "http://10.0.2.2:3000", // Pour émulateur Android
     "http://192.168.1.100:5173", // À remplacer par ton IP locale si besoin
   ].filter(Boolean);
+
+  // Ajouter dynamiquement l'IP locale (si elle commence par 192.168.)
+  const localIp = "192.168.15.4";
+  if (localIp.startsWith("192.168.")) {
+    allowedOrigins.push(`http://${localIp}:5173`);
+    allowedOrigins.push(`http://${localIp}:3000`);
+  }
 
   app.use(
     cors({
