@@ -38,6 +38,53 @@ const generateTxCode = () => {
 const generateAuthCode = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
+// Helper to ensure a piyes account exists for a user, create if missing
+async function ensurePiyesAccount(
+  userId: string,
+  userBalance: number,
+  userAccountNumber: string,
+): Promise<string> {
+  // Check existing piyes account
+  const { data: existing } = await supabase
+    .from("Account")
+    .select("id")
+    .eq("userId", userId)
+    .eq("provider", "piyes")
+    .maybeSingle();
+
+  if (existing) {
+    return existing.id;
+  }
+
+  // Create missing piyes account
+  const newAccountId = generateId();
+  const { error: insertError } = await supabase.from("Account").insert({
+    id: newAccountId,
+    userId: userId,
+    provider: "piyes",
+    label: "piYès",
+    balance: userBalance,
+    accountNumber: userAccountNumber,
+    color: "#830AD1",
+    logoText: "P",
+    status: "active",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    permission: "oui",
+  });
+
+  if (insertError) {
+    console.error(
+      "Failed to create piyes account for user",
+      userId,
+      insertError,
+    );
+    throw new Error("Impossible de créer le compte piYès du destinataire");
+  }
+
+  return newAccountId;
+}
+
 // 1. TRANSFER
 router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
   try {
@@ -111,14 +158,17 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       );
     }
 
-    // Fetch accounts
-    const { data: senderAccount } = await supabase
-      .from("Account")
-      .select("id")
-      .eq("userId", sender.id)
-      .eq("provider", "piyes")
-      .single();
-    const accountId = senderAccount?.id || "piyes-main";
+    // Ensure piyes accounts exist for both sender and receiver
+    const accountId = await ensurePiyesAccount(
+      sender.id,
+      sender.balance,
+      sender.accountNumber,
+    );
+    const receiverAccountId = await ensurePiyesAccount(
+      receiver.id,
+      receiver.balance,
+      receiver.accountNumber,
+    );
 
     // Gestion description : chaîne vide si l'utilisateur n'a rien saisi (car colonne NOT NULL)
     let description = validated.description;
@@ -153,30 +203,36 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
 
     if (txError) throw txError;
 
-    const { data: receiverAccount } = await supabase
-      .from("Account")
-      .select("id")
-      .eq("userId", receiver.id)
-      .eq("provider", "piyes")
-      .single();
-    const receiverAccountId = receiverAccount?.id || "piyes-main";
-
     const receiverTxId = generateId();
-    await supabase.from("Transaction").insert({
-      id: receiverTxId,
-      type: TransactionType.TRANSFER,
-      amount: amountCents,
-      description: validated.description || null, // pareil
-      role: TransactionRole.RECEIVER,
-      counterpartyName: sender.name,
-      userId: receiver.id,
-      accountId: receiverAccountId,
-      external_id: txCode,
-      auth_code: authCode,
-      date: new Date().toISOString(),
-    });
+    const { error: receiverInsertError } = await supabase
+      .from("Transaction")
+      .insert({
+        id: receiverTxId,
+        type: TransactionType.TRANSFER,
+        amount: amountCents,
+        description: validated.description || "",
+        role: TransactionRole.RECEIVER,
+        counterpartyName: sender.name,
+        userId: receiver.id,
+        accountId: receiverAccountId,
+        external_id: txCode,
+        auth_code: authCode,
+        date: new Date().toISOString(),
+      });
 
-    // Update balances (same as before)
+    if (receiverInsertError) {
+      console.error(
+        "Failed to insert receiver transaction:",
+        receiverInsertError,
+      );
+      // Rollback : supprimer la transaction PAYER déjà insérée
+      await supabase.from("Transaction").delete().eq("id", transaction.id);
+      throw new Error(
+        "Échec de l’enregistrement de la transaction pour le destinataire",
+      );
+    }
+
+    // Update balances
     await supabase
       .from("User")
       .update({
@@ -203,7 +259,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", receiver.id)
       .eq("provider", "piyes");
 
-    // Notifications (same)
+    // Notifications
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: receiver.id,
@@ -232,7 +288,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    // Contacts update (same)
+    // Contacts update
     const now = new Date().toISOString();
     const { data: existingContact } = await supabase
       .from("Contact")
@@ -294,7 +350,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
-    // Scheduled reminder handling (same)
+    // Scheduled reminder handling
     const schedulerId = req.body.schedulerId;
     if (schedulerId) {
       const paidAt = new Date().toISOString();
