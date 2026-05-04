@@ -299,6 +299,15 @@ router.post("/avatar", authMiddleware, async (req: AuthRequest, res) => {
 
     if (error) throw error;
 
+    // Propager l'avatar à tous les contacts qui référencent cet utilisateur
+    const { error: contactError } = await supabase
+      .from("Contact")
+      .update({ avatarUrl })
+      .eq("contactUserId", userId);
+
+    if (contactError)
+      console.error("Failed to update contact avatars:", contactError);
+
     res.json({ success: true, avatarUrl: user.avatarUrl });
   } catch (error) {
     console.error("Avatar upload error:", error);
@@ -403,6 +412,15 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
       .single();
 
     if (error) throw error;
+
+    // Propager l'avatar à tous les contacts qui référencent cet utilisateur
+    const { error: contactError } = await supabase
+      .from("Contact")
+      .update({ avatarUrl })
+      .eq("contactUserId", userId);
+
+    if (contactError)
+      console.error("Failed to update contact avatars:", contactError);
 
     res.json({
       id: user.id,
