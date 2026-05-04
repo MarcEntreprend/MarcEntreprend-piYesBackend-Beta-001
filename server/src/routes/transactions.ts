@@ -1854,4 +1854,42 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
+// 15. GET /transactions/balance-before?date=2025-01-01T00:00:00.000Z
+router.get("/balance-before", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { date } = req.query;
+    if (!date)
+      return res.status(400).json({ error: "Date parameter required" });
+
+    const targetDate = new Date(date as string);
+    if (isNaN(targetDate.getTime())) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+
+    // Récupérer toutes les transactions AVANT cette date
+    const { data: transactions } = await supabase
+      .from("Transaction")
+      .select("amount, role")
+      .eq("userId", userId)
+      .lt("date", targetDate.toISOString());
+
+    // Calculer le solde
+    let balance = 0;
+    (transactions || []).forEach((tx: any) => {
+      if (tx.role === "RECEIVER") {
+        balance += tx.amount;
+      } else if (tx.role === "PAYER") {
+        balance -= tx.amount;
+      }
+    });
+
+    res.json({ balance: balance / 100 });
+  } catch (error) {
+    console.error("Balance before error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 export default router;
