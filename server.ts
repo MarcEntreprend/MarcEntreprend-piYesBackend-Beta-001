@@ -52,6 +52,7 @@ async function initializeApp() {
     // Production URLs
     "https://pi-yes-frontend-beta-001.vercel.app",
     "https://pi-yes-frontend-beta-001-git-main-marcentreprends-projects.vercel.app",
+    "https://piyes-wallet.vercel.app",
     "https://piyes-frontend.vercel.app", // pour d'autres URLs
     // Autoriser tous les sous-domaines Vercel (optionnel, pour plus de flexibilité)
     /^https:\/\/.*\.vercel\.app$/,
@@ -67,7 +68,19 @@ async function initializeApp() {
   app.use(
     cors({
       origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        // Permettre les requêtes sans origin (ex: apps mobiles, curl)
+        if (!origin) return callback(null, true);
+
+        // Vérifier si l'origine est autorisée (string exacte OU regex)
+        const isAllowed = allowedOrigins.some((allowed) => {
+          if (typeof allowed === "string") return allowed === origin;
+          if (allowed instanceof RegExp) return allowed.test(origin);
+          return false;
+        });
+
+        console.log(`[CORS] Origin: ${origin} - Allowed: ${isAllowed}`); // Log pour debug
+
+        if (isAllowed) {
           callback(null, true);
         } else {
           console.warn(`[CORS] Blocked origin: ${origin}`);
@@ -77,9 +90,9 @@ async function initializeApp() {
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization"],
+      optionsSuccessStatus: 200,
     }),
   );
-
   // Health Checks
   app.get("/healthz", (req, res) => res.status(200).send("OK"));
   app.get("/api/health", (req, res) =>
