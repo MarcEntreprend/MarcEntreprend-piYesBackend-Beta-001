@@ -49,6 +49,11 @@ async function initializeApp() {
     "http://localhost",
     "http://localhost:8080",
     "http://10.0.2.2:3000",
+    // Production URLs
+    "https://pi-yes-frontend-beta-001.vercel.app",
+    "https://piyes-frontend.vercel.app", // pour d'autres URLs
+    // Autoriser tous les sous-domaines Vercel (optionnel, pour plus de flexibilité)
+    /^https:\/\/.*\.vercel\.app$/,
   ].filter(Boolean);
 
   // Ajouter dynamiquement l'IP locale (pour éviter de la fixer en dur)
