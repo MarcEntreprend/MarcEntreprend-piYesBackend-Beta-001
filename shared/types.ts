@@ -218,6 +218,8 @@ export interface Receipt {
   operator?: string;
   phoneNumber?: string;
   counterparty?: string;
+  balance_before?: number;
+  balance_after?: number;
 }
 
 // --- EXISTING TYPES ---
@@ -297,6 +299,8 @@ export interface Transaction {
   external_id?: string;
   status?: "PENDING" | "COMPLETED" | "FAILED";
   moncashTransactionId?: string;
+  balance_before?: number; // Solde AVANT la transaction (en gourdes)
+  balance_after?: number; // Solde APRÈS la transaction (en gourdes)
 }
 
 export enum CardStatus {
