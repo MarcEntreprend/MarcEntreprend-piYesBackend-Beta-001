@@ -183,6 +183,11 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
+    // --- Calcul des soldes avant/après pour le PAYEUR ---
+    const senderBalanceBefore = sender.balance; // en centimes
+    const senderNewBalance = sender.balance - amountCents;
+    const senderBalanceAfter = senderNewBalance;
+
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -197,11 +202,18 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         external_id: txCode,
         auth_code: authCode,
         date: new Date().toISOString(),
+        balance_before: senderBalanceBefore,
+        balance_after: senderBalanceAfter,
       })
       .select()
       .single();
 
     if (txError) throw txError;
+
+    // --- Calcul des soldes avant/après pour le RECEVEUR ---
+    const receiverBalanceBefore = receiver.balance; // en centimes
+    const receiverNewBalance = receiver.balance + amountCents;
+    const receiverBalanceAfter = receiverNewBalance;
 
     const receiverTxId = generateId();
     const { error: receiverInsertError } = await supabase
@@ -218,6 +230,8 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         external_id: txCode,
         auth_code: authCode,
         date: new Date().toISOString(),
+        balance_before: receiverBalanceBefore,
+        balance_after: receiverBalanceAfter,
       });
 
     if (receiverInsertError) {
@@ -232,34 +246,34 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       );
     }
 
-    // Update balances
+    // Update balances (même code qu'avant)
     await supabase
       .from("User")
       .update({
-        balance: sender.balance - amountCents,
+        balance: senderNewBalance,
         updatedAt: new Date().toISOString(),
       })
       .eq("id", sender.id);
     await supabase
       .from("Account")
-      .update({ balance: sender.balance - amountCents })
+      .update({ balance: senderNewBalance })
       .eq("userId", sender.id)
       .eq("provider", "piyes");
 
     await supabase
       .from("User")
       .update({
-        balance: receiver.balance + amountCents,
+        balance: receiverNewBalance,
         updatedAt: new Date().toISOString(),
       })
       .eq("id", receiver.id);
     await supabase
       .from("Account")
-      .update({ balance: receiver.balance + amountCents })
+      .update({ balance: receiverNewBalance })
       .eq("userId", receiver.id)
       .eq("provider", "piyes");
 
-    // Notifications
+    // Notifications (inchangées)
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: receiver.id,
@@ -288,7 +302,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    // Contacts update
+    // Contacts update (inchangé)
     const now = new Date().toISOString();
     const { data: existingContact } = await supabase
       .from("Contact")
@@ -350,7 +364,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
-    // Scheduled reminder handling
+    // Scheduled reminder handling (inchangé)
     const schedulerId = req.body.schedulerId;
     if (schedulerId) {
       const paidAt = new Date().toISOString();
@@ -419,7 +433,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 2. RECHARGE (unchanged, no notification)
+// 2. RECHARGE (avec balance_before / balance_after)
 router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -456,6 +470,10 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
+    // Récupérer le solde actuel du compte (en centimes)
+    const currentBalanceCents = account.balance;
+    const impactCents = -amountCents; // recharge = argent sortant
+
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -470,16 +488,20 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
         external_id: txCode,
         auth_code: authCode,
         date: new Date().toISOString(),
+        balance_before: currentBalanceCents,
+        balance_after: currentBalanceCents + impactCents,
       })
       .select()
       .single();
+
     if (txError) throw txError;
 
-    const newAccountBalance = account.balance - amountCents;
+    const newAccountBalance = account.balance + impactCents;
     await supabase
       .from("Account")
       .update({ balance: newAccountBalance })
       .eq("id", account.id);
+
     if (account.provider === "piyes") {
       await supabase
         .from("User")
@@ -504,12 +526,15 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
     const validated = depositWithdrawSchema.parse(req.body);
     const amountCents = Math.round(validated.amount * 100);
 
-    const { data: user } = await supabase
+    // Récupérer l'utilisateur et son solde actuel (en centimes)
+    const { data: user, error: userError } = await supabase
       .from("User")
       .select("balance")
       .eq("id", userId)
       .single();
-    if (!user) throw new Error("User not found");
+    if (userError || !user) throw new Error("User not found");
+
+    const currentBalanceCents = user.balance; // déjà en centimes
 
     const { data: userAccount } = await supabase
       .from("Account")
@@ -547,6 +572,8 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
             accountId: accountId,
             status: "PENDING",
             date: new Date().toISOString(),
+            balance_before: currentBalanceCents, // solde avant
+            balance_after: currentBalanceCents, // pas encore effectué
           });
           return res.json({ redirectUrl, orderId });
         } catch (error: any) {
@@ -559,8 +586,11 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
+    // Dépôt standard
+    const newBalanceCents = currentBalanceCents + amountCents;
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
+
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -575,24 +605,26 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
         external_id: txCode,
         auth_code: authCode,
         date: new Date().toISOString(),
+        balance_before: currentBalanceCents,
+        balance_after: newBalanceCents,
       })
       .select()
       .single();
     if (txError) throw txError;
 
-    const newBalance = user.balance + amountCents;
+    // Mettre à jour le solde utilisateur
     await supabase
       .from("User")
-      .update({ balance: newBalance })
+      .update({ balance: newBalanceCents })
       .eq("id", userId);
     await supabase
       .from("Account")
-      .update({ balance: newBalance })
+      .update({ balance: newBalanceCents })
       .eq("userId", userId)
       .eq("provider", "piyes");
 
-    // Create notification for deposit
-    const { error: notifError } = await supabase.from("Notification").insert({
+    // Notification
+    await supabase.from("Notification").insert({
       id: generateId(),
       userId: userId,
       type: "deposit_success",
@@ -605,10 +637,6 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       route: "/history",
       timestamp: new Date().toISOString(),
     });
-
-    if (notifError) {
-      console.error("Deposit notification error:", notifError);
-    }
 
     res.json(transaction);
   } catch (error: any) {
@@ -627,116 +655,35 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
     const validated = depositWithdrawSchema.parse(req.body);
     const amountCents = Math.round(validated.amount * 100);
 
-    const { data: user } = await supabase
+    // Fetch user with current balance (in cents)
+    const { data: user, error: userError } = await supabase
       .from("User")
       .select("*")
       .eq("id", userId)
       .single();
-    if (!user) throw new Error("User not found");
+    if (userError || !user) throw new Error("User not found");
 
     if (user.balance < amountCents) throw new Error("Insufficient balance");
 
+    // Ensure piYès account exists (or get accountId)
     const { data: userAccount } = await supabase
       .from("Account")
       .select("id")
       .eq("userId", userId)
       .eq("provider", "piyes")
-      .single();
+      .maybeSingle();
     const accountId = userAccount?.id || "piyes-main";
 
-    // MonCash logic
-    if (validated.accountId) {
-      const { data: destAccount } = await supabase
-        .from("Account")
-        .select("*")
-        .eq("id", validated.accountId)
-        .eq("userId", userId)
-        .single();
-      if (destAccount?.provider === "moncash") {
-        try {
-          const { moncashService } =
-            await import("../services/moncashService.js");
-          const merchantBalance = await moncashService.getPrefundedBalance();
-          if (merchantBalance < validated.amount) {
-            throw new Error(
-              "Service temporairement indisponible (Solde marchand insuffisant)",
-            );
-          }
-          const reference = generateId();
-          const result = await moncashService.transfer(
-            validated.amount,
-            destAccount.accountNumber,
-            reference,
-          );
+    // Balance before (current balance in cents)
+    const balanceBefore = user.balance;
+    // Impact: negative for withdrawal
+    const impact = -amountCents;
+    const balanceAfter = balanceBefore + impact;
 
-          const txCode = generateTxCode();
-          const authCode = generateAuthCode();
-          const { data: transaction, error: txError } = await supabase
-            .from("Transaction")
-            .insert({
-              id: generateId(),
-              type: TransactionType.WITHDRAW,
-              amount: amountCents,
-              description: "Retrait vers MonCash",
-              role: TransactionRole.PAYER,
-              counterpartyName: "MonCash",
-              userId: userId,
-              accountId: accountId,
-              external_id: txCode,
-              auth_code: authCode,
-              moncashTransactionId: result.transaction_id || reference,
-              status: "COMPLETED",
-              date: new Date().toISOString(),
-            })
-            .select()
-            .single();
-          if (txError) throw txError;
-
-          const newBalance = user.balance - amountCents;
-          await supabase
-            .from("User")
-            .update({ balance: newBalance })
-            .eq("id", userId);
-          await supabase
-            .from("Account")
-            .update({ balance: newBalance })
-            .eq("userId", userId)
-            .eq("provider", "piyes");
-
-          await supabase.from("Notification").insert({
-            id: generateId(),
-            userId: userId,
-            type: "withdraw_success",
-            title: "withdraw_success",
-            body: "withdraw_success.body",
-            amount: validated.amount.toString(),
-            data: { name: "MonCash", amount: validated.amount },
-            isRead: false,
-            targetId: transaction.id,
-            route: "/history",
-            timestamp: new Date().toISOString(),
-          });
-          return res.json(transaction);
-        } catch (error: any) {
-          if (error.message === "Maximum Account Balance") {
-            return res.status(400).json({
-              error: {
-                message:
-                  "Désolé, votre compte MonCash a atteint son plafond légal. Veuillez vider votre compte MonCash avant de demander un retrait piYès.",
-                code: "MONCASH_LIMIT_REACHED",
-              },
-            });
-          }
-          return res.status(400).json({
-            error: { message: error.message || "MonCash withdrawal failed" },
-          });
-        }
-      }
-    }
-
-    // Standard withdrawal
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
+
+    // Insert transaction with balance_before and balance_after
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -751,15 +698,18 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
         external_id: txCode,
         auth_code: authCode,
         date: new Date().toISOString(),
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
       })
       .select()
       .single();
     if (txError) throw txError;
 
-    const newBalance = user.balance - amountCents;
+    // Update user balance (in cents)
+    const newBalance = balanceAfter;
     await supabase
       .from("User")
-      .update({ balance: newBalance })
+      .update({ balance: newBalance, updatedAt: new Date().toISOString() })
       .eq("id", userId);
     await supabase
       .from("Account")
@@ -767,6 +717,7 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", userId)
       .eq("provider", "piyes");
 
+    // Create notification
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: userId,
@@ -783,6 +734,7 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(transaction);
   } catch (error: any) {
+    console.error("Withdraw error:", error);
     res
       .status(400)
       .json({ error: { message: error.message || "Withdraw failed" } });
@@ -883,7 +835,7 @@ router.post("/schedule", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 7. QR SCAN / PAY (unchanged except notification)
+// 7. QR SCAN / PAY (avec balance_before / balance_after)
 router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -977,6 +929,11 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
 
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
+
+    // Solde avant pour le sender (en centimes)
+    const senderBalanceBefore = sender.balance;
+    const senderImpact = -amountCents;
+
     // Insertion de la transaction PAYER
     const { data: transaction, error: payerError } = await supabase
       .from("Transaction")
@@ -992,6 +949,8 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
         external_id: txCode,
         auth_code: authCode,
         date: new Date().toISOString(),
+        balance_before: senderBalanceBefore,
+        balance_after: senderBalanceBefore + senderImpact,
       })
       .select()
       .single();
@@ -1001,7 +960,11 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       throw payerError;
     }
 
-    // Insertion de la transaction RECEIVER avec vérification d'erreur
+    // Solde avant pour le receiver
+    const receiverBalanceBefore = receiver.balance;
+    const receiverImpact = +amountCents;
+
+    // Insertion de la transaction RECEIVER
     const { error: receiverError } = await supabase.from("Transaction").insert({
       id: generateId(),
       type: TransactionType.TRANSFER,
@@ -1014,6 +977,8 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       external_id: txCode,
       auth_code: authCode,
       date: new Date().toISOString(),
+      balance_before: receiverBalanceBefore,
+      balance_after: receiverBalanceBefore + receiverImpact,
     });
 
     if (receiverError) {
@@ -1026,6 +991,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       throw receiverError;
     }
 
+    // Mise à jour des soldes (users + accounts)
     await supabase
       .from("User")
       .update({ balance: newSenderBalance })
@@ -1046,7 +1012,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", receiver.id)
       .eq("provider", "piyes");
 
-    // Notification for receiver
+    // Notification pour le receiver
     await supabase.from("Notification").insert({
       id: generateId(),
       userId: receiver.id,
@@ -1061,7 +1027,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    // Update contacts (simplified)
+    // Mise à jour des contacts (simplifiée)
     const now = new Date().toISOString();
     const { data: existingContact } = await supabase
       .from("Contact")
@@ -1095,6 +1061,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(transaction);
   } catch (error: any) {
+    console.error("QR scan error:", error);
     res
       .status(400)
       .json({ error: { message: error.message || "QR Payment failed" } });
@@ -1134,7 +1101,7 @@ const maskAccountNumber = (acc: string) => {
   return `••••${lastPart}`;
 };
 
-// 9. RECEIPT (unchanged)
+// 9. RECEIPT (avec balance_before / balance_after)
 router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { data: tx } = await supabase
@@ -1143,11 +1110,13 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
       .eq("id", req.params.id)
       .single();
     if (!tx) return res.status(404).json({ error: "Transaction not found" });
+
     const { data: account } = await supabase
       .from("Account")
       .select("*, user:User(*)")
       .eq("id", tx.accountId)
       .single();
+
     let counterpartyAccount = null,
       counterpartyUser = null;
     if (tx.type === TransactionType.TRANSFER && tx.external_id) {
@@ -1169,6 +1138,7 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
         }
       }
     }
+
     const myAccount = account,
       myUser = account?.user;
     const senderAccount =
@@ -1179,6 +1149,13 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
       tx.role === TransactionRole.RECEIVER ? myAccount : counterpartyAccount;
     const receiverUser =
       tx.role === TransactionRole.RECEIVER ? myUser : counterpartyUser;
+
+    const maskAccountNumber = (acc: string) => {
+      if (!acc) return "••••";
+      const lastPart = acc.length > 4 ? acc.slice(-4) : acc;
+      return `••••${lastPart}`;
+    };
+
     const receipt = {
       id: tx.id,
       amount: tx.amount / 100,
@@ -1210,6 +1187,8 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
       moncashTransactionId: tx.moncashTransactionId,
       counterparty: tx.counterpartyName,
       description: tx.description,
+      balance_before: tx.balance_before ? tx.balance_before / 100 : undefined,
+      balance_after: tx.balance_after ? tx.balance_after / 100 : undefined,
       sender: {
         name:
           senderUser?.name ||
@@ -1244,7 +1223,7 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 10. INTER-BANK TRANSFER (unchanged)
+// 10. INTER-BANK TRANSFER (avec balance_before / balance_after)
 router.post(
   "/inter-bank-transfer",
   authMiddleware,
@@ -1252,14 +1231,17 @@ router.post(
     try {
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
       const validated = interBankTransferSchema.parse(req.body);
       const amountCents = Math.round(validated.amount * 100);
+
       const { data: user } = await supabase
         .from("User")
         .select("*")
         .eq("id", userId)
         .single();
       if (!user) throw new Error("User not found");
+
       let sourceAcc: any = null;
       if (validated.sourceId === "piyes-main") {
         const { data } = await supabase
@@ -1287,6 +1269,7 @@ router.post(
           .single();
         sourceAcc = data;
       }
+
       let destAcc: any = null;
       if (validated.destId === "piyes-main") {
         const { data } = await supabase
@@ -1314,11 +1297,13 @@ router.post(
           .single();
         destAcc = data;
       }
+
       if (!sourceAcc) throw new Error("Source account not found");
       if (!destAcc) throw new Error("Destination account not found");
       if (sourceAcc.provider === "piyes") {
         if (user.balance < amountCents) throw new Error("Insufficient balance");
       }
+
       const txCode = generateTxCode();
       const authCode = generateAuthCode();
 
@@ -1330,6 +1315,15 @@ router.post(
       const counterpartyRole = isUserSource
         ? TransactionRole.RECEIVER
         : TransactionRole.PAYER;
+
+      // Récupérer le solde actuel de l'utilisateur (en centimes)
+      const currentUserBalanceCents = user.balance;
+      let impactUserCents = 0;
+      if (isUserSource) {
+        impactUserCents = -amountCents; // l'utilisateur est source → sortie d'argent
+      } else {
+        impactUserCents = +amountCents; // l'utilisateur est destination → entrée d'argent
+      }
 
       // Transaction pour l'utilisateur (compte piYès)
       const userTxId = generateId();
@@ -1349,15 +1343,32 @@ router.post(
           external_id: txCode,
           auth_code: authCode,
           date: new Date().toISOString(),
+          balance_before: currentUserBalanceCents,
+          balance_after: currentUserBalanceCents + impactUserCents,
         })
         .select()
         .single();
 
       if (userTxError) throw userTxError;
 
-      // Transaction pour l'autre compte (externe)
+      // Transaction pour l'autre compte (externe) - si l'autre utilisateur existe
       const otherUserId = isUserSource ? destAcc.userId : sourceAcc.userId;
       if (otherUserId) {
+        // Récupérer le solde actuel de l'autre utilisateur
+        const { data: otherUser } = await supabase
+          .from("User")
+          .select("balance")
+          .eq("id", otherUserId)
+          .single();
+
+        const currentOtherBalanceCents = otherUser?.balance || 0;
+        let impactOtherCents = 0;
+        if (isUserSource) {
+          impactOtherCents = +amountCents; // autre utilisateur est destination → reçoit
+        } else {
+          impactOtherCents = -amountCents; // autre utilisateur est source → envoie
+        }
+
         await supabase.from("Transaction").insert({
           id: generateId(),
           type: TransactionType.INTERBANK_OUT,
@@ -1372,8 +1383,23 @@ router.post(
           external_id: txCode,
           auth_code: authCode,
           date: new Date().toISOString(),
+          balance_before: currentOtherBalanceCents,
+          balance_after: currentOtherBalanceCents + impactOtherCents,
         });
       }
+
+      // Mettre à jour les soldes
+      const newUserBalance = currentUserBalanceCents + impactUserCents;
+      await supabase
+        .from("User")
+        .update({ balance: newUserBalance })
+        .eq("id", userId);
+      await supabase
+        .from("Account")
+        .update({ balance: newUserBalance })
+        .eq("userId", userId)
+        .eq("provider", "piyes");
+
       res.json(userTx);
     } catch (error: any) {
       console.error("Inter-bank transfer error:", error);
@@ -1646,11 +1672,12 @@ router.get("/reports", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 13. INTERNATIONAL (unchanged)
+// 13. INTERNATIONAL (avec balance_before / balance_after)
 router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
     const {
       amount,
       country,
@@ -1661,6 +1688,7 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       amountForeign,
       exchangeRate,
     } = req.body;
+
     if (!amount || !country || !recipientName || !method) {
       return res.status(400).json({
         error: {
@@ -1669,23 +1697,31 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
         },
       });
     }
+
     const { data: user } = await supabase
       .from("User")
       .select("*")
       .eq("id", userId)
       .single();
     if (!user) return res.status(404).json({ error: "User not found" });
+
     const amountCents = Math.round(parseFloat(amount) * 100);
     if (user.balance < amountCents) {
       return res.status(400).json({
         error: { message: "Solde insuffisant", code: "INSUFFICIENT_BALANCE" },
       });
     }
+
     const { v4: uuidv4 } = await import("uuid");
     const txId = uuidv4();
     const intlId = uuidv4();
     const authCode = Math.random().toString(36).substring(2, 10).toUpperCase();
     const externalId = `INTL-${Date.now()}`;
+
+    // Récupérer le solde actuel de l'utilisateur (en centimes)
+    const currentBalanceCents = user.balance;
+    const impactCents = -amountCents; // transfert international = sortie d'argent
+
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -1699,10 +1735,14 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
         auth_code: authCode,
         external_id: externalId,
         date: new Date().toISOString(),
+        balance_before: currentBalanceCents,
+        balance_after: currentBalanceCents + impactCents,
       })
       .select()
       .single();
+
     if (txError) throw txError;
+
     const feesCents = Math.round(amountCents * 0.01);
     await supabase.from("InternationalTransfer").insert({
       id: intlId,
@@ -1723,7 +1763,8 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    const newBalance = user.balance - amountCents;
+
+    const newBalance = user.balance + impactCents;
     await supabase
       .from("User")
       .update({ balance: newBalance })
@@ -1733,6 +1774,7 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       .update({ balance: newBalance })
       .eq("userId", userId)
       .eq("provider", "piyes");
+
     res.json({
       id: txId,
       auth_code: authCode,
@@ -1854,42 +1896,4 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
-// 15. GET /transactions/balance-before?date=2025-01-01T00:00:00.000Z
-router.get("/balance-before", authMiddleware, async (req: AuthRequest, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-    const { date } = req.query;
-    if (!date)
-      return res.status(400).json({ error: "Date parameter required" });
-
-    const targetDate = new Date(date as string);
-    if (isNaN(targetDate.getTime())) {
-      return res.status(400).json({ error: "Invalid date format" });
-    }
-
-    // Récupérer toutes les transactions AVANT cette date
-    const { data: transactions } = await supabase
-      .from("Transaction")
-      .select("amount, role")
-      .eq("userId", userId)
-      .lt("date", targetDate.toISOString());
-
-    // Calculer le solde
-    let balance = 0;
-    (transactions || []).forEach((tx: any) => {
-      if (tx.role === "RECEIVER") {
-        balance += tx.amount;
-      } else if (tx.role === "PAYER") {
-        balance -= tx.amount;
-      }
-    });
-
-    res.json({ balance: balance / 100 });
-  } catch (error) {
-    console.error("Balance before error:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
 export default router;
