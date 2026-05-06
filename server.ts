@@ -1,4 +1,4 @@
-// backend server.ts - VERSION VERCEL FINALE
+// backend server.ts
 
 import "dotenv/config";
 import express from "express";
@@ -41,22 +41,22 @@ async function initializeApp() {
     "http://localhost:5173",
     "http://localhost:4173",
     "http://localhost:3000",
+    "http://192.168.15.2:5173",
+    "http://192.168.15.2:3000",
     process.env.FRONTEND_URL || "",
     "capacitor://localhost",
     "http://capacitor.localhost",
     "https://capacitor.localhost",
     "ionic://localhost",
-    "http://localhost",
     "http://localhost:8080",
     "http://10.0.2.2:3000",
-    // Production URLs
     "https://pi-yes-frontend-beta-001.vercel.app",
-    "https://pi-yes-frontend-beta-001-git-main-marcentreprends-projects.vercel.app",
     "https://piyes-wallet.vercel.app",
-    "https://piyes-frontend.vercel.app", // pour d'autres URLs
-    // Autoriser tous les sous-domaines Vercel (optionnel, pour plus de flexibilité)
+    "https://piyes-frontend.vercel.app",
     /^https:\/\/.*\.vercel\.app$/,
   ].filter(Boolean);
+
+  // Supprime complètement la partie avec localIp (plus besoin)
 
   // Ajouter dynamiquement l'IP locale (pour éviter de la fixer en dur)
   const localIp = "192.168.15.4"; // ← idéalement, rendre ça automatique
