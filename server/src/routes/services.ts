@@ -5,6 +5,12 @@ import { authMiddleware, AuthRequest } from "../middleware.js";
 import { supabase } from "../supabase.js";
 import { TransactionType, TransactionRole } from "../../../shared/types.js";
 import { servicePaySchema } from "../../../shared/schemas.js";
+import {
+  getIdempotencyKey,
+  getOrCreateCustomerLedgerAccount,
+  ledgerErrorResponse,
+  postOrder,
+} from "../services/ledgerService.ts";
 
 const router = express.Router();
 
@@ -76,46 +82,87 @@ router.post("/pay", authMiddleware, async (req: AuthRequest, res) => {
     if (!receiver) throw new Error("Provider not found");
     if (receiver.id === sender.id) throw new Error("Cannot pay yourself");
 
-    // Update balances
-    await supabase
-      .from("User")
-      .update({
-        balance: sender.balance - amountCents,
-        updatedAt: new Date().toISOString(),
-      })
-      .eq("id", sender.id);
-    await supabase
-      .from("User")
-      .update({
-        balance: receiver.balance + amountCents,
-        updatedAt: new Date().toISOString(),
-      })
-      .eq("id", receiver.id);
+    // === LEDGER : paiement de service = débit payeur / crédit prestataire ===
+    const { data: senderPiyesAccount } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("userId", sender.id)
+      .eq("provider", "piyes")
+      .maybeSingle();
+    const { data: receiverPiyesAccount } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("userId", receiver.id)
+      .eq("provider", "piyes")
+      .maybeSingle();
 
+    const senderLedgerId = await getOrCreateCustomerLedgerAccount(sender.id, {
+      name: sender.name,
+      piyesAccountId: senderPiyesAccount?.id,
+      piyesUserId: sender.id,
+      initialBalanceCents: sender.balance || 0,
+    });
+    const receiverLedgerId = await getOrCreateCustomerLedgerAccount(
+      receiver.id,
+      {
+        name: receiver.name,
+        piyesAccountId: receiverPiyesAccount?.id,
+        piyesUserId: receiver.id,
+        initialBalanceCents: receiver.balance || 0,
+      },
+    );
+
+    const idempotencyKey = getIdempotencyKey(req);
+    const ledgerResult = await postOrder({
+      idempotencyKey,
+      type: "SERVICE_PAY",
+      customerUserId: sender.id,
+      amountCents,
+      debitAccountId: senderLedgerId,
+      creditAccountId: receiverLedgerId,
+      description: validated.description || `Payment to ${receiver.name}`,
+      externalRef: idempotencyKey,
+    });
+
+    if (ledgerResult.replay) {
+      const { data: existing } = await supabase
+        .from("Transaction")
+        .select("*")
+        .eq("payment_order_id", ledgerResult.paymentOrderId)
+        .eq("role", TransactionRole.PAYER)
+        .maybeSingle();
+      if (existing) return res.json(existing);
+    }
+
+    const balanceAfter = ledgerResult.debitBalance!;
+    const balanceBefore = balanceAfter + amountCents;
     const txCode = "SRV-" + Math.floor(100000 + Math.random() * 900000);
     const { v4: uuidv4 } = await import("uuid");
-    const { data: transaction } = await supabase
+    const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
         id: uuidv4(),
         type: TransactionType.TRANSFER,
         amount: amountCents,
-        description:
-          validated.description || `Payment to ${receiver.name}`,
+        description: validated.description || `Payment to ${receiver.name}`,
         role: TransactionRole.PAYER,
         counterpartyName: receiver.name,
         userId: sender.id,
+        accountId: senderPiyesAccount?.id || null,
         external_id: txCode,
+        payment_order_id: ledgerResult.paymentOrderId,
         date: new Date().toISOString(),
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
       })
       .select()
       .single();
+    if (txError) throw txError;
 
     res.json(transaction);
   } catch (error: any) {
-    res
-      .status(400)
-      .json({ error: { message: error.message || "Payment failed" } });
+    const mapped = ledgerErrorResponse(error);
+    res.status(mapped.status).json(mapped.body);
   }
 });
 

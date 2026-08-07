@@ -75,6 +75,14 @@ npm run dev
 
 ---
 
+# Arrêter le serveur en cours (Ctrl+C dans le terminal où il tourne)
+
+# Puis relancer :
+
+npx tsx server.ts
+
+---
+
 ## effacer le cache
 
 Remove-Item -Recurse -Force node_modules/.vite -ErrorAction SilentlyContinue

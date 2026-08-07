@@ -41,7 +41,7 @@ router.post("/signup", async (req, res) => {
     const validated = signupSchema.parse(req.body);
     const device = validated.device || req.ip || "unknown";
 
-    // ✅ OPTION 2 : Construction du nom d'affichage
+    // Construction du nom d'affichage
     const displayName =
       validated.name ||
       `${validated.firstName || ""} ${validated.lastName || ""}`.trim() ||
@@ -159,6 +159,20 @@ router.post("/signup", async (req, res) => {
 
     if (userError || !user)
       throw userError || new Error("Failed to create user");
+
+    // Créer le ledger account pour ce nouvel utilisateur
+    const { data: ledgerAccount, error: ledgerError } = await supabase.rpc(
+      "piyes_ledger_get_or_create_customer_account",
+      {
+        p_customer_user_id: user.id,
+        p_name: user.name,
+        p_piyes_account_id: user.accountNumber,
+        p_piyes_user_id: user.id,
+        p_initial_balance_cents: 0,
+      },
+    );
+    if (ledgerError)
+      console.error("Ledger creation error (non-bloquant):", ledgerError);
 
     // --- CREATION BUSINESS PROFILE SI ENTREPRISE ---
     if (validated.accountType === "business") {

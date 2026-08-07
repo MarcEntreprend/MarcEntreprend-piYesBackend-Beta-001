@@ -74,20 +74,49 @@ router.get("/sync", authMiddleware, async (req: AuthRequest, res) => {
       (n: any) => !n.isRead,
     ).length;
 
+    // Récupérer les soldes depuis le ledger
+    const ledgerAccounts = await supabase
+      .from("ledger_account")
+      .select("id, piyes_account_id")
+      .eq("customer_user_id", userId);
+
+    const ledgerBalances = await supabase
+      .from("ledger_account_balance")
+      .select("ledger_account_id, balance_cents")
+      .in(
+        "ledger_account_id",
+        (ledgerAccounts.data || []).map((a: any) => a.id),
+      );
+
+    const balanceMap: Record<string, number> = {};
+    (ledgerBalances.data || []).forEach((b: any) => {
+      const acc = (ledgerAccounts.data || []).find(
+        (a: any) => a.id === b.ledger_account_id,
+      );
+      if (acc) balanceMap[acc.piyes_account_id] = b.balance_cents;
+    });
+
     const accounts = (user.accounts || []).map((acc: any) => ({
       ...acc,
-      balance: acc.balance / 100,
+      balance: (balanceMap[acc.id] ?? acc.balance) / 100,
     }));
 
     // Ensure piYès account is always present and first
     const hasPiyes = accounts.some((a: any) => a.provider === "piyes");
     if (!hasPiyes) {
+      // Récupérer le solde ledger du compte piYès
+      const piyesLedger = (ledgerAccounts.data || []).find(
+        (a: any) => a.piyes_account_id === user.accountNumber,
+      );
+      const piyesBalance = piyesLedger
+        ? (balanceMap[piyesLedger.id] ?? 0)
+        : user.balance;
       accounts.unshift({
         id: "piyes-main",
         userId: user.id,
         provider: "piyes",
         label: "piYès",
-        balance: user.balance / 100,
+        balance: piyesBalance / 100,
         color: "#830AD1",
         accountNumber: user.accountNumber,
         logoText: "P",
@@ -762,9 +791,7 @@ router.post(
 
       const metadata = otpService.getMetadata(id);
       if (!metadata || metadata.userId !== userId) {
-        return res
-          .status(403)
-          .json({ error: "Forbidden or session expired" });
+        return res.status(403).json({ error: "Forbidden or session expired" });
       }
 
       const { error } = await supabase.from("Key").insert({
