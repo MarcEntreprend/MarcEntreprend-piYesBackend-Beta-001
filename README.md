@@ -58,7 +58,7 @@ npm run dev
 
 ---
 
-effacer le cache
+## effacer le cache
 
 Remove-Item -Recurse -Force node_modules/.vite -ErrorAction SilentlyContinue
 
