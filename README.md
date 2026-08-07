@@ -58,6 +58,12 @@ npm run dev
 
 ---
 
+effacer le cache
+
+Remove-Item -Recurse -Force node_modules/.vite -ErrorAction SilentlyContinue
+
+---
+
 ## déployer vercel / # Déployer en production (met à jour le backend Vercel)
 
 cd C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-backend
