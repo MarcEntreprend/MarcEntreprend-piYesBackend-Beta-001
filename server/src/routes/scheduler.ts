@@ -73,6 +73,22 @@ async function createNotif(
   await supabase.from("Notification").insert(insertData);
 }
 
+async function reminderNotifExists(
+  type: string,
+  targetId: string,
+): Promise<boolean> {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const { data } = await supabase
+    .from("Notification")
+    .select("id")
+    .eq("type", type)
+    .eq("targetId", targetId)
+    .gte("timestamp", startOfToday.toISOString())
+    .maybeSingle();
+  return !!data;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. CRÉER un rappel (receiver seulement)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -675,6 +691,13 @@ router.get("/active-between", authMiddleware, async (req: AuthRequest, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/trigger-reminders", async (req, res) => {
   try {
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret || req.headers["x-cron-secret"] !== cronSecret) {
+      return res
+        .status(403)
+        .json({ error: { message: "Forbidden", code: "FORBIDDEN" } });
+    }
+
     const now = new Date();
     const currentHour = now.getHours();
     const currentMin = now.getMinutes();
@@ -713,6 +736,8 @@ router.post("/trigger-reminders", async (req, res) => {
       const dueDateStr = String(sched.dueDate); // ← cast explicite en string
 
       if (sched.payerUserId) {
+        if (await reminderNotifExists("scheduled_request", sched.id)) continue;
+
         const remindersLeft = reminders
           .filter((r: any) => r.date >= todayStr)
           .reduce(
@@ -738,6 +763,8 @@ router.post("/trigger-reminders", async (req, res) => {
       }
 
       if (sched.receiverUserId) {
+        if (await reminderNotifExists("scheduled_created", sched.id)) continue;
+
         const { data: payer } = await supabase
           .from("User")
           .select("name")

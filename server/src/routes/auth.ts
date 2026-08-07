@@ -11,10 +11,11 @@ import { authMiddleware, AuthRequest } from "../middleware.js";
 
 const router = express.Router();
 
-const ACCESS_SECRET =
-  process.env.JWT_ACCESS_SECRET || "piyes_access_secret_change_me_in_prod";
-const REFRESH_SECRET =
-  process.env.JWT_REFRESH_SECRET || "piyes_refresh_secret_change_me_in_prod";
+const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
+const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+if (!ACCESS_SECRET || !REFRESH_SECRET) {
+  throw new Error("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are required (set them in .env)");
+}
 
 router.post("/logout-all", authMiddleware, async (req: AuthRequest, res) => {
   try {
@@ -430,8 +431,7 @@ router.post("/verify-session-otp", async (req, res) => {
       });
     }
 
-    // Vérification OTP : accepter si le code correspond OU si l'otpService valide (TEST MODE)
-    // En TEST MODE, otpService.verifyOtp retourne toujours true — donc ce check passe toujours
+    // Vérification OTP : otpService (mémoire) OU code stocké dans la session
     const otpValid =
       otpService.verifyOtp(requestId, code, false) || session.otpCode === code;
     const notExpired =
@@ -648,7 +648,6 @@ router.post("/reset-password", async (req, res) => {
     }
 
     // Double vérification : otpService en mémoire ET session en BDD
-    // En phase test : otpService accepte 000000 si une session existe en BDD
     const memoryValid = otpService.verifyOtp(target, code, false);
 
     // Find the password reset session in DB

@@ -45,6 +45,23 @@ piyes-wallet-backend/
 
 ## Run Locally
 
+### Script pour vérifier les erreurs TS/TSX
+
+npx tsc --noEmit
+
+or
+
+```
+   Write-Host "Vérification des erreurs TypeScript..." -ForegroundColor Cyan
+   npx tsc --noEmit
+
+   if ($LASTEXITCODE -eq 0) {
+   Write-Host "✓ AUCUNE ERREUR !" -ForegroundColor Green
+   } else {
+   Write-Host "✗ Des erreurs ont été trouvées" -ForegroundColor Red
+   }
+```
+
 **Prerequisites:** Node.js
 
 1. Install dependencies:

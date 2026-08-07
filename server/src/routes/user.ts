@@ -344,26 +344,6 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
 
     if (!currentUser) return res.status(404).json({ error: "User not found" });
 
-    // before "Désactiver OTP pour profile"
-    // // Sensitive changes check (Email/Phone)
-    // const normalizedPhone = phone ? (phone.startsWith('+') ? phone : (phone.startsWith('509') ? `+${phone}` : `+509${phone}`)) : phone;
-    // const emailChanged = email && email.toLowerCase() !== currentUser.email.toLowerCase();
-    // const phoneChanged = normalizedPhone && normalizedPhone !== currentUser.phone;
-
-    // if (emailChanged || phoneChanged) {
-    //   if (!otpCode) {
-    //     return res.status(400).json({ error: 'OTP verification required for email or phone changes', code: 'OTP_REQUIRED' });
-    //   }
-    //   const target = emailChanged ? email.toLowerCase() : normalizedPhone;
-    //   const isValid = otpService.verifyOtp(target, otpCode);
-    //   if (!isValid) {
-    //     return res.status(400).json({ error: 'Invalid or expired OTP code' });
-    //   }
-    // }
-
-    // Désactiver OTP pour profile
-    // TEST MODE MVP : OTP désactivé pour email/phone — accepté directement
-    // TODO: réactiver le bloc OTP ci-dessous en production
     const normalizedPhone = phone
       ? phone.startsWith("+")
         ? phone
@@ -371,7 +351,32 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
           ? `+${phone}`
           : `+509${phone}`
       : phone;
-    // (vérification OTP désactivée pour beta test)
+
+    const emailChanged =
+      email &&
+      currentUser.email &&
+      email.toLowerCase() !== currentUser.email.toLowerCase();
+    const phoneChanged =
+      normalizedPhone && normalizedPhone !== currentUser.phone;
+
+    if (emailChanged || phoneChanged) {
+      if (!otpCode) {
+        return res.status(400).json({
+          error: {
+            message:
+              "Vérification OTP requise pour changer l'email ou le téléphone",
+            code: "OTP_REQUIRED",
+          },
+        });
+      }
+      const target = emailChanged ? email.toLowerCase() : normalizedPhone;
+      const isValid = otpService.verifyOtp(target, otpCode);
+      if (!isValid) {
+        return res.status(400).json({
+          error: { message: "Code invalide ou expiré", code: "INVALID_OTP" },
+        });
+      }
+    }
 
     // Calculate initials if name is changed
     const initials = name
@@ -495,14 +500,18 @@ router.post("/pin/verify", authMiddleware, async (req: AuthRequest, res) => {
       .single();
 
     if (!user || !user.pinHash) {
-      return res.status(404).json({ error: "PIN not set" });
+      return res.status(400).json({
+        error: { message: "PIN non configuré", code: "PIN_NOT_SET" },
+      });
     }
 
-    // TEST MODE MVP : accepte n'importe quel PIN sans vérification
-    // TODO: remplacer par la vérification bcrypt en production :
-    // const bcrypt = await import('bcryptjs');
-    // const isValid = await bcrypt.compare(pin, user.pinHash);
-    // if (!isValid) return res.status(400).json({ error: 'Invalid PIN' });
+    const bcrypt = await import("bcryptjs");
+    const isValid = await bcrypt.compare(pin, user.pinHash);
+    if (!isValid) {
+      return res.status(400).json({
+        error: { message: "PIN incorrect", code: "INVALID_PIN" },
+      });
+    }
 
     res.json({ success: true });
   } catch (error) {
@@ -525,7 +534,7 @@ router.get("/search", authMiddleware, async (req: AuthRequest, res) => {
     const query = q.trim().toLowerCase();
     let dbQuery = supabase
       .from("User")
-      .select("id, name, tag, phone, avatarUrl, initials, verificationStatus");
+      .select("id, name, tag, avatarUrl, initials, verificationStatus");
 
     if (query.startsWith("@")) {
       // Search by tag
@@ -740,73 +749,37 @@ router.post(
       const id = req.params.id as string;
       const { code } = req.body;
 
-      // // Check in centralized otpService
-      // const isValid = otpService.verifyOtp(id, code, false);
-      // if (isValid) {
-      //   const metadata = otpService.getMetadata(id);
-      //   if (!metadata || metadata.userId !== userId) {
-      //     return res.status(403).json({ error: 'Forbidden or session expired' });
-      //   }
-
-      // NEW : BYPASSING
-      const isValid = otpService.verifyOtp(id, code, false);
-      if (isValid) {
-        const metadata = otpService.getMetadata(id);
-
-        // TEST MODE : si pas de metadata en mémoire (store purgé ou test),
-        // on accepte quand même si la key existe déjà en DB (isVerified = true)
-        // ou si on a le metadata avec le bon userId
-        if (metadata && metadata.userId !== userId) {
-          return res
-            .status(403)
-            .json({ error: "Forbidden or session expired" });
-        }
-
-        if (!metadata) {
-          // Pas de metadata en mémoire — vérifier si la key existe déjà en BDD
-          const { data: existingKey } = await supabase
-            .from("Key")
-            .select("id, isVerified")
-            .eq("id", id)
-            .eq("userId", userId)
-            .maybeSingle();
-          if (existingKey?.isVerified) return res.json(true);
-          // En test mode : accepter sans metadata
-          console.log(`[TEST MODE] Key verify without metadata for id=${id}`);
-          return res.json(true);
-        }
-
-        // Valid! Insert into DB
-        const { error } = await supabase.from("Key").insert({
-          id, // Use the same ID (requestId)
-          userId: metadata.userId,
-          type: metadata.type,
-          value: metadata.value,
-          isVerified: true,
-          createdAt: new Date().toISOString(),
-        });
-
-        if (error) throw error;
-
-        otpService.verifyOtp(id, code, true); // Consume it now
-        return res.json(true);
+      if (!code) {
+        return res.status(400).json({ error: "Code OTP requis" });
       }
 
-      // Fallback for keys already in DB (though currently they don't have otpCode column)
-      const { data: key } = await supabase
-        .from("Key")
-        .select("*")
-        .eq("id", id)
-        .eq("userId", userId)
-        .single();
+      const isValid = otpService.verifyOtp(id, code, false);
+      if (!isValid) {
+        return res.status(400).json({
+          error: { message: "Code invalide ou expiré", code: "INVALID_OTP" },
+        });
+      }
 
-      if (!key) return res.status(404).json({ error: "Key not found" });
-      if (key.isVerified) return res.json(true);
+      const metadata = otpService.getMetadata(id);
+      if (!metadata || metadata.userId !== userId) {
+        return res
+          .status(403)
+          .json({ error: "Forbidden or session expired" });
+      }
 
-      // Since we know the DB doesn't have otpCode, we can't verify from DB
-      return res.status(400).json({
-        error: "Verification failed. Please try adding the key again.",
+      const { error } = await supabase.from("Key").insert({
+        id,
+        userId: metadata.userId,
+        type: metadata.type,
+        value: metadata.value,
+        isVerified: true,
+        createdAt: new Date().toISOString(),
       });
+
+      if (error) throw error;
+
+      otpService.verifyOtp(id, code, true);
+      return res.json(true);
     } catch (error) {
       console.error("Verify key error:", error);
       res.status(500).json({ error: "Internal server error" });
@@ -879,13 +852,9 @@ router.patch(
 );
 
 // POST /api/v1/user/by-phones
-// Receives normalized 8-digit phones, builds all variants for DB lookup
-router.post("/by-phones", async (req: AuthRequest, res) => {
+router.post("/by-phones", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { phones } = req.body;
-
-    // Temporary debug log — remove after confirming format
-    console.log("[by-phones] Received phones sample:", phones.slice(0, 5));
 
     if (!phones || !Array.isArray(phones) || phones.length === 0) {
       return res.status(400).json({ error: "Liste de phones requise" });
@@ -903,27 +872,16 @@ router.post("/by-phones", async (req: AuthRequest, res) => {
       ),
     ];
 
-    console.log(
-      `[by-phones] Searching ${phoneVariants.length} variants for ${phones.length} phones`,
-    );
-
     const { data: users, error } = await supabase
       .from("User")
-      .select("id, phone, name, firstName, lastName, tag, avatarUrl")
+      .select("id, phone, name, tag, avatarUrl")
       .in("phone", phoneVariants);
 
-    // Temporary debug log
-    console.log(
-      "[by-phones] Found users:",
-      (users || []).map((u: any) => u.phone),
-    );
-    //
     if (error) {
       console.error("[by-phones] Supabase error:", error);
       return res.status(500).json({ error: "Erreur recherche utilisateurs" });
     }
 
-    console.log(`[by-phones] Found ${users?.length || 0} users`);
     return res.json({ users: users || [] });
   } catch (error) {
     console.error("[by-phones] Route error:", error);

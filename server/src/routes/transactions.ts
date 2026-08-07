@@ -18,6 +18,7 @@ import {
   computeTotalFees,
   computeSimulatedMoncashFees,
 } from "../services/feeTransaction.js";
+import { verifyPin } from "../services/pinService.js";
 
 const router = express.Router();
 
@@ -103,7 +104,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
 
     if (senderError || !sender) throw new Error("User not found");
 
-    console.log(`[TEST MODE] PIN bypass for user ${sender.id}`);
+    await verifyPin(sender.pinHash, validated.pin);
 
     if (sender.balance < amountCents) {
       throw new Error("Insufficient balance");
@@ -465,7 +466,7 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
       .eq("id", userId)
       .single();
     if (!user) throw new Error("Utilisateur introuvable");
-    console.log(`[TEST MODE] PIN bypass for recharge user ${userId}`);
+    await verifyPin(user.pinHash, validated.pin);
 
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
@@ -861,7 +862,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .eq("id", userId)
       .single();
     if (!sender) throw new Error("User not found");
-    console.log(`[TEST MODE] PIN bypass for user ${sender.id}`);
+    await verifyPin(sender.pinHash, req.body.pin);
     if (sender.balance < amountCents) throw new Error("Insufficient balance");
 
     let receiver = null;
@@ -1425,6 +1426,13 @@ router.post(
       const result =
         await moncashService.retrieveTransactionPayment(transactionId);
       if (result.payment.message === "successful") {
+        const { data: alreadyRecorded } = await supabase
+          .from("Transaction")
+          .select("*")
+          .eq("moncashTransactionId", transactionId)
+          .maybeSingle();
+        if (alreadyRecorded) return res.json(alreadyRecorded);
+
         const amountCents = Math.round(result.payment.cost * 100);
         const { data: user } = await supabase
           .from("User")

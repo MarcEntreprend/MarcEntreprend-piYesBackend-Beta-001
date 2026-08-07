@@ -88,3 +88,9 @@ export const interBankTransferSchema = z.object({
   note: z.string().optional(),
   pin: z.string().length(4).optional(),
 });
+
+export const servicePaySchema = z.object({
+  providerTag: z.string().min(1),
+  amount: z.number().positive(),
+  description: z.string().optional(),
+});

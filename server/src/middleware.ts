@@ -3,7 +3,10 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'piyes_access_secret_change_me_in_prod';
+const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
+if (!ACCESS_SECRET) {
+  throw new Error("JWT_ACCESS_SECRET is required (set it in .env)");
+}
 
 export interface AuthRequest extends Request {
   user?: {

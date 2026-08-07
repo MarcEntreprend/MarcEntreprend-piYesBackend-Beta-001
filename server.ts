@@ -24,6 +24,9 @@ async function initializeApp() {
           "http://localhost:3000/api/v1/scheduler/trigger-reminders",
           {
             method: "POST",
+            headers: {
+              "x-cron-secret": process.env.CRON_SECRET || "",
+            },
           },
         );
       } catch (e) {
@@ -37,7 +40,7 @@ async function initializeApp() {
   app.use(express.urlencoded({ limit: "10mb", extended: true }));
   app.use(cookieParser());
 
-  const allowedOrigins = [
+  const allowedOrigins: (string | RegExp)[] = [
     "http://localhost:5173",
     "http://localhost:4173",
     "http://localhost:3000",
@@ -53,7 +56,6 @@ async function initializeApp() {
     "https://pi-yes-frontend-beta-001.vercel.app",
     "https://piyes-wallet.vercel.app",
     "https://piyes-frontend.vercel.app",
-    /^https:\/\/.*\.vercel\.app$/,
   ].filter(Boolean);
 
   // Supprime complètement la partie avec localIp (plus besoin)

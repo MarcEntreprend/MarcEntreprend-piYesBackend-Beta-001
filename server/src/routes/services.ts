@@ -4,6 +4,7 @@ import express from "express";
 import { authMiddleware, AuthRequest } from "../middleware.js";
 import { supabase } from "../supabase.js";
 import { TransactionType, TransactionRole } from "../../../shared/types.js";
+import { servicePaySchema } from "../../../shared/schemas.js";
 
 const router = express.Router();
 
@@ -55,8 +56,8 @@ router.post("/pay", authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const { providerTag, amount, description } = req.body;
-    const amountCents = Math.round(amount * 100);
+    const validated = servicePaySchema.parse(req.body);
+    const amountCents = Math.round(validated.amount * 100);
 
     const { data: sender } = await supabase
       .from("User")
@@ -70,9 +71,10 @@ router.post("/pay", authMiddleware, async (req: AuthRequest, res) => {
     const { data: receiver } = await supabase
       .from("User")
       .select("*")
-      .eq("tag", providerTag)
+      .eq("tag", validated.providerTag)
       .single();
     if (!receiver) throw new Error("Provider not found");
+    if (receiver.id === sender.id) throw new Error("Cannot pay yourself");
 
     // Update balances
     await supabase
@@ -98,7 +100,8 @@ router.post("/pay", authMiddleware, async (req: AuthRequest, res) => {
         id: uuidv4(),
         type: TransactionType.TRANSFER,
         amount: amountCents,
-        description: description || `Payment to ${receiver.name}`,
+        description:
+          validated.description || `Payment to ${receiver.name}`,
         role: TransactionRole.PAYER,
         counterpartyName: receiver.name,
         userId: sender.id,
