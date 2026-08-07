@@ -11,6 +11,237 @@ import { authMiddleware, AuthRequest } from "../middleware.js";
 
 const router = express.Router();
 
+// ============================================
+// DEMO MODE - Création de compte démo unique
+// ============================================
+router.post("/demo/start", async (req, res) => {
+  try {
+    const { sessionName, preferredName } = req.body;
+
+    // Déterminer le nom à afficher
+    let displayName = "Visiteur";
+    let emailPrefix = "demo";
+
+    if (sessionName === "auto") {
+      // Compter les comptes démo existants
+      const { count } = await supabase
+        .from("User")
+        .select("*", { count: "exact", head: true })
+        .eq("is_demo", true);
+
+      const demoNumber = (count || 0) + 1;
+      emailPrefix = `demo_${String(demoNumber).padStart(3, "0")}`;
+      displayName = `Visiteur ${demoNumber}`;
+    } else if (preferredName) {
+      const cleanName = preferredName
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "_");
+      emailPrefix = cleanName.slice(0, 20);
+      displayName = preferredName.trim();
+    }
+
+    const demoEmail = `${emailPrefix}@demo.piyes.ht`;
+
+    // Vérifier si un compte avec cet email existe déjà
+    const { data: existingUser } = await supabase
+      .from("User")
+      .select("*")
+      .eq("email", demoEmail)
+      .maybeSingle();
+
+    if (existingUser) {
+      // Connexion automatique
+      const token = jwt.sign(
+        { id: existingUser.id, email: existingUser.email },
+        ACCESS_SECRET,
+        { expiresIn: "24h" },
+      );
+      return res.json({
+        user: {
+          id: existingUser.id,
+          name: existingUser.name,
+          tag: existingUser.tag,
+          email: existingUser.email,
+          phone: existingUser.phone,
+          accountNumber: existingUser.accountNumber,
+          avatarUrl: existingUser.avatarUrl,
+          balance: existingUser.balance / 100,
+          isDeviceVerified: existingUser.isDeviceVerified,
+          hasPin: !!existingUser.pinHash,
+        },
+        token,
+        isNew: false,
+      });
+    }
+
+    // Récupérer le compte template
+    const { data: templateUser, error: templateError } = await supabase
+      .from("User")
+      .select("*")
+      .eq("email", "template@demo.piyes.ht")
+      .single();
+
+    if (templateError || !templateUser) {
+      console.error("Template user not found", templateError);
+      return res.status(500).json({ error: "Mode démo non configuré" });
+    }
+
+    // Générer un mot de passe aléatoire (jamais utilisé)
+    const demoPassword = crypto.randomBytes(16).toString("hex");
+    const passwordHash = await bcrypt.hash(demoPassword, 10);
+
+    // Créer un tag unique
+    const tag = `@${emailPrefix}`;
+
+    // Créer le nouvel utilisateur démo
+    const { v4: uuidv4 } = await import("uuid");
+    const newUserId = uuidv4();
+
+    const newUser = {
+      id: newUserId,
+      email: demoEmail,
+      name: displayName,
+      tag,
+      passwordHash,
+      balance: templateUser.balance,
+      phone: null,
+      is_demo: true,
+      demo_session_id: uuidv4(),
+      demo_created_at: new Date().toISOString(),
+      accountNumber: `DEMO-${Math.floor(10000 + Math.random() * 90000)}`,
+      isDeviceVerified: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const { data: createdUser, error: createError } = await supabase
+      .from("User")
+      .insert(newUser)
+      .select()
+      .single();
+
+    if (createError) throw createError;
+
+    // Copier les comptes (Account) du template
+    const { data: templateAccounts } = await supabase
+      .from("Account")
+      .select("*")
+      .eq("userId", templateUser.id);
+
+    if (templateAccounts?.length) {
+      const newAccounts = templateAccounts.map((acc) => ({
+        id: uuidv4(),
+        userId: newUserId,
+        provider: acc.provider,
+        label: acc.label,
+        balance: acc.balance,
+        color: acc.color,
+        accountNumber: acc.accountNumber,
+        logoText: acc.logoText,
+        status: "active",
+        permission: "oui",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
+      await supabase.from("Account").insert(newAccounts);
+    }
+
+    // Copier les contacts
+    const { data: templateContacts } = await supabase
+      .from("Contact")
+      .select("*")
+      .eq("userId", templateUser.id);
+
+    if (templateContacts?.length) {
+      const newContacts = templateContacts.map((c) => ({
+        id: uuidv4(),
+        userId: newUserId,
+        contactUserId: c.contactUserId,
+        name: c.name,
+        tag: c.tag,
+        phone: c.phone,
+        email: c.email,
+        isFavorite: c.isFavorite,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
+      await supabase.from("Contact").insert(newContacts);
+    }
+
+    // Copier les transactions
+    const { data: templateTransactions } = await supabase
+      .from("Transaction")
+      .select("*")
+      .eq("userId", templateUser.id);
+
+    if (templateTransactions?.length) {
+      const newTransactions = templateTransactions.map((tx) => ({
+        id: uuidv4(),
+        userId: newUserId,
+        amount: tx.amount,
+        type: tx.type,
+        role: tx.role,
+        counterpartyName: tx.counterpartyName,
+        description: tx.description,
+        date: new Date().toISOString(),
+        balance_before: tx.balance_before,
+        balance_after: tx.balance_after,
+      }));
+      await supabase.from("Transaction").insert(newTransactions);
+    }
+
+    // Générer le token JWT
+    const token = jwt.sign(
+      { id: createdUser.id, email: createdUser.email },
+      ACCESS_SECRET,
+      { expiresIn: "24h" },
+    );
+
+    // Créer une session
+    const refreshToken = jwt.sign({ id: createdUser.id }, REFRESH_SECRET, {
+      expiresIn: "30d",
+    });
+    const { v4: uuidv4session } = await import("uuid");
+    await supabase.from("Session").insert({
+      id: uuidv4session(),
+      userId: createdUser.id,
+      token: refreshToken,
+      device: "demo_mode",
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      isVerified: true,
+      createdAt: new Date().toISOString(),
+    });
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({
+      user: {
+        id: createdUser.id,
+        name: createdUser.name,
+        tag: createdUser.tag,
+        email: createdUser.email,
+        phone: createdUser.phone,
+        accountNumber: createdUser.accountNumber,
+        avatarUrl: createdUser.avatarUrl,
+        balance: createdUser.balance / 100,
+        isDeviceVerified: true,
+        hasPin: false,
+      },
+      token,
+      isNew: true,
+    });
+  } catch (error) {
+    console.error("Demo start error:", error);
+    res.status(500).json({ error: "Failed to start demo session" });
+  }
+});
+
 const ACCESS_SECRET =
   process.env.JWT_ACCESS_SECRET || "piyes_access_secret_change_me_in_prod";
 const REFRESH_SECRET =
