@@ -11,10 +11,16 @@ import { authMiddleware, AuthRequest } from "../middleware.js";
 
 const router = express.Router();
 
+console.log(">>> [AUTH] auth.ts chargé !");
+console.log(">>> [AUTH] router =", router);
+console.log(">>> [AUTH] router.use =", typeof router?.use);
+
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
 const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 if (!ACCESS_SECRET || !REFRESH_SECRET) {
-  throw new Error("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are required (set them in .env)");
+  throw new Error(
+    "JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are required (set them in .env)",
+  );
 }
 
 router.post("/logout-all", authMiddleware, async (req: AuthRequest, res) => {
@@ -35,6 +41,12 @@ router.post("/signup", async (req, res) => {
     const validated = signupSchema.parse(req.body);
     const device = validated.device || req.ip || "unknown";
 
+    // ✅ OPTION 2 : Construction du nom d'affichage
+    const displayName =
+      validated.name ||
+      `${validated.firstName || ""} ${validated.lastName || ""}`.trim() ||
+      "user";
+
     // Robust tag generation
     const generateBaseTag = (name: string) => {
       return name
@@ -46,7 +58,7 @@ router.post("/signup", async (req, res) => {
         .replace(/\s+/g, "_"); // Spaces to underscores
     };
 
-    let baseTag = generateBaseTag(validated.name);
+    let baseTag = generateBaseTag(displayName);
     if (baseTag.length < 4) baseTag = baseTag.padEnd(4, "0");
     if (baseTag.length > 24) baseTag = baseTag.substring(0, 24); // Leave room for @ and potential suffix
 
@@ -105,7 +117,9 @@ router.post("/signup", async (req, res) => {
     const userId = uuidv4();
 
     // Format email en minuscules
-    validated.email = validated.email?.toLowerCase();
+    if (validated.email) {
+      validated.email = validated.email.toLowerCase();
+    }
 
     // Fonction Title Case sécurisée
     const toTitleCase = (str?: string) =>
@@ -117,27 +131,25 @@ router.post("/signup", async (req, res) => {
     validated.firstName = toTitleCase(validated.firstName);
     validated.lastName = toTitleCase(validated.lastName);
 
-    // Fusionner pour colonne name
-    validated.name =
-      `${validated.firstName || ""} ${validated.lastName || ""}`.trim();
+    // Fusionner pour colonne name (utilise displayName si validated.name est vide)
+    validated.name = displayName;
 
     const { data: user, error: userError } = await supabase
       .from("User")
       .insert({
         id: userId,
-        firstName: validated.firstName, // <-- ajouté
-        lastName: validated.lastName, // <-- ajouté
-        name: validated.name, // fusion prénom + nom
-        email: validated.email || null, // nullable — phone-only signup autorisé
-        //email: validated.email,
-        accountType: validated.accountType || "individual", // <-- ajouté
+        firstName: validated.firstName,
+        lastName: validated.lastName,
+        name: validated.name,
+        email: validated.email || null,
+        accountType: validated.accountType || "individual",
         passwordHash,
         tag,
         accountNumber,
         phone: validated.phone,
         balance: 0,
         verificationStatus: "unverified",
-        isDeviceVerified: true, // First device is verified
+        isDeviceVerified: true,
         language: "Français",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -173,7 +185,6 @@ router.post("/signup", async (req, res) => {
     });
 
     // Créer le compte piYès avec permission = 'oui' et id UUID
-    // account( auto + phone-only)
     const { v4: uuidv4acc } = await import("uuid");
     const { error: accError } = await supabase.from("Account").insert({
       id: uuidv4acc(),
@@ -246,7 +257,9 @@ router.post("/signup", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const validated = loginSchema.parse(req.body);
-    validated.email = validated.email?.toLowerCase();
+    if (validated.email) {
+      validated.email = validated.email.toLowerCase();
+    }
     const device = validated.device || req.ip || "unknown";
 
     let query = supabase.from("User").select("*");
@@ -265,7 +278,6 @@ router.post("/login", async (req, res) => {
 
     // message d'erreur login
     if (error || !user) {
-      // Ne pas révéler si c'est l'email ou le phone qui n'existe pas (sécurité)
       console.log(
         `[AUTH] Login FAILED: User not found for ${validated.email || validated.phone}`,
       );
@@ -365,11 +377,6 @@ router.post("/login", async (req, res) => {
       expiresIn: "30d",
     });
 
-    // Update or create session
-    // We'll just insert a new session for this device
-    // If we want to limit to 1 device, we'd delete others first
-    // await supabase.from('Session').delete().eq('userId', user.id);
-
     const { v4: uuidv4login } = await import("uuid");
     const { error: loginSessionError } = await supabase.from("Session").insert({
       id: uuidv4login(),
@@ -431,7 +438,6 @@ router.post("/verify-session-otp", async (req, res) => {
       });
     }
 
-    // Vérification OTP : otpService (mémoire) OU code stocké dans la session
     const otpValid =
       otpService.verifyOtp(requestId, code, false) || session.otpCode === code;
     const notExpired =
@@ -443,15 +449,12 @@ router.post("/verify-session-otp", async (req, res) => {
       });
     }
 
-    // MVP : supprimer TOUTES les autres sessions de cet user — une seule session active
-    // Garantit qu'un seul device est connecté à la fois
     await supabase
       .from("Session")
       .delete()
       .eq("userId", session.userId)
       .neq("token", requestId);
 
-    // Upgrade la session courante en session vérifiée
     const refreshToken = jwt.sign({ id: session.userId }, REFRESH_SECRET, {
       expiresIn: "30d",
     });
@@ -481,8 +484,6 @@ router.post("/verify-session-otp", async (req, res) => {
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    // Sauvegarder le nouveau token JWT dans la réponse
-    // Le frontend (App.tsx handleLogin) le stockera dans localStorage
     res.json({
       user: {
         id: session.user.id,
@@ -505,15 +506,12 @@ router.post("/verify-session-otp", async (req, res) => {
 });
 
 // --- OTP ROUTES ---
-// In-memory store for OTPs (for demo purposes)
-// Moved to otpService.ts for sharing across routes
 
 router.post("/otp/request", async (req, res) => {
   try {
     const { contact, email, phone } = req.body;
     let target = contact || email || phone || "anonymous";
 
-    // Normalize phone if it looks like one
     if (
       target &&
       !target.includes("@") &&
@@ -546,7 +544,6 @@ router.post("/forgot-password", async (req, res) => {
     if (!identifier)
       return res.status(400).json({ error: "Identifier is required" });
 
-    // Normalize identifier: trim and remove internal spaces
     let target = identifier.trim().replace(/\s+/g, "");
     if (!target.includes("@") && /^\d+$/.test(target.replace("+", ""))) {
       if (target.startsWith("+")) {
@@ -560,7 +557,6 @@ router.post("/forgot-password", async (req, res) => {
       target = target.toLowerCase();
     }
 
-    // Check if user exists
     const { data: user } = await supabase
       .from("User")
       .select("id, email, phone")
@@ -576,16 +572,14 @@ router.post("/forgot-password", async (req, res) => {
 
     console.log(`[FORGOT PASSWORD] Generating OTP for target: "${target}"`);
     const otpCode = otpService.generateOtp(target);
-    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 minutes
+    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-    // Delete any existing password reset sessions for this user
     await supabase
       .from("Session")
       .delete()
       .eq("userId", user.id)
       .eq("device", "password_reset");
 
-    // Create a persistent session for password reset
     const { v4: uuidv4 } = await import("uuid");
     await supabase.from("Session").insert({
       id: uuidv4(),
@@ -617,7 +611,6 @@ router.post("/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Normalize identifier: trim and remove internal spaces
     let target = identifier.trim().replace(/\s+/g, "");
     if (!target.includes("@") && /^\d+$/.test(target.replace("+", ""))) {
       if (target.startsWith("+")) {
@@ -635,7 +628,6 @@ router.post("/reset-password", async (req, res) => {
       `[AUTH] Reset password attempt for: ${target} with code: ${code}`,
     );
 
-    // Find the user first
     const { data: user } = await supabase
       .from("User")
       .select("id")
@@ -647,10 +639,8 @@ router.post("/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Invalid or expired code" });
     }
 
-    // Double vérification : otpService en mémoire ET session en BDD
     const memoryValid = otpService.verifyOtp(target, code, false);
 
-    // Find the password reset session in DB
     const { data: session, error: sessionError } = await supabase
       .from("Session")
       .select("*")
@@ -659,7 +649,6 @@ router.post("/reset-password", async (req, res) => {
       .eq("otpCode", code)
       .maybeSingle();
 
-    // Accepter si au moins une des deux sources valide le code
     const dbValid =
       !sessionError &&
       !!session &&
@@ -676,7 +665,6 @@ router.post("/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Invalid or expired code" });
     }
 
-    // Update password
     const passwordHash = await bcrypt.hash(newPassword, 10);
     const { error: updateError } = await supabase
       .from("User")
@@ -685,11 +673,8 @@ router.post("/reset-password", async (req, res) => {
 
     if (updateError) throw updateError;
 
-    // Supprimer TOUTES les sessions de cet user après reset
     await supabase.from("Session").delete().eq("userId", user.id);
 
-    // ✅ AUTO-LOGIN POUR MVP HAÏTI
-    // Récupérer les infos complètes de l'utilisateur
     const { data: fullUser } = await supabase
       .from("User")
       .select("*")
@@ -700,7 +685,6 @@ router.post("/reset-password", async (req, res) => {
       return res.status(500).json({ error: "User not found after reset" });
     }
 
-    // Créer nouveau token et session
     const token = jwt.sign(
       { id: fullUser.id, email: fullUser.email },
       ACCESS_SECRET,
@@ -710,7 +694,6 @@ router.post("/reset-password", async (req, res) => {
       expiresIn: "30d",
     });
 
-    // Créer une nouvelle session vérifiée
     const { v4: uuidv4 } = await import("uuid");
     await supabase.from("Session").insert({
       id: uuidv4(),
@@ -729,7 +712,6 @@ router.post("/reset-password", async (req, res) => {
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    // Retourner user + token pour auto-login
     res.json({
       success: true,
       message: "Password reset successfully",
@@ -761,7 +743,6 @@ router.post("/otp/resend", async (req, res) => {
 
     const otpCode = otpService.generateOtp(requestId);
 
-    // Check if this is a session token and update the DB if so
     const { data: session } = await supabase
       .from("Session")
       .select("id")
@@ -777,7 +758,6 @@ router.post("/otp/resend", async (req, res) => {
         })
         .eq("id", session.id);
     } else {
-      // Check if this is a password reset session (requestId is email or phone)
       const { data: user } = await supabase
         .from("User")
         .select("id")
@@ -823,7 +803,6 @@ router.post("/otp/verify", async (req, res) => {
 
     console.log(`[SECURITY] OTP Verification SUCCESS for ${target}`);
 
-    // If the target is an email, mark the user as device verified
     if (target.includes("@")) {
       await supabase
         .from("User")
@@ -836,6 +815,10 @@ router.post("/otp/verify", async (req, res) => {
     console.error("OTP verification error:", error);
     res.status(500).json({ error: "Failed to verify OTP" });
   }
+});
+
+router.get("/test", (req, res) => {
+  res.json({ message: "Auth route works!" });
 });
 
 export default router;

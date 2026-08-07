@@ -7,16 +7,29 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import { fileURLToPath } from "url";
 
+// ✅ IMPORTS AVEC .ts
+import authRoutes from "./server/src/routes/auth.ts";
+import userRoutes from "./server/src/routes/user.ts";
+import transactionsRoutes from "./server/src/routes/transactions.ts";
+import contactsRoutes from "./server/src/routes/contacts.ts";
+import friendshipRoutes from "./server/src/routes/friendship.ts";
+import schedulerRoutes from "./server/src/routes/scheduler.ts";
+import servicesRoutes from "./server/src/routes/services.ts";
+import promotionsRoutes from "./server/src/routes/promotions.ts";
+import banksRoutes from "./server/src/routes/banks.ts";
+
+console.log(">>> [SERVER] authRoutes =", authRoutes);
+console.log(">>> [SERVER] typeof authRoutes =", typeof authRoutes);
+console.log(">>> [SERVER] authRoutes.use =", typeof authRoutes?.use);
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// BACKGROUND INITIALIZATION
 async function initializeApp() {
   console.log(">>> [STARTUP] Beginning background initialization...");
 
-  // Cron de rappels (dev uniquement)
   if (process.env.NODE_ENV !== "production") {
     setInterval(async () => {
       try {
@@ -35,7 +48,6 @@ async function initializeApp() {
     }, 60 * 1000);
   }
 
-  // Middleware
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ limit: "10mb", extended: true }));
   app.use(cookieParser());
@@ -58,10 +70,7 @@ async function initializeApp() {
     "https://piyes-frontend.vercel.app",
   ].filter(Boolean);
 
-  // Supprime complètement la partie avec localIp (plus besoin)
-
-  // Ajouter dynamiquement l'IP locale (pour éviter de la fixer en dur)
-  const localIp = "192.168.15.4"; // ← idéalement, rendre ça automatique
+  const localIp = "192.168.15.4";
   if (localIp && localIp.startsWith("192.168.")) {
     allowedOrigins.push(`http://${localIp}:5173`);
     allowedOrigins.push(`http://${localIp}:3000`);
@@ -70,18 +79,12 @@ async function initializeApp() {
   app.use(
     cors({
       origin: (origin, callback) => {
-        // Permettre les requêtes sans origin (ex: apps mobiles, curl)
         if (!origin) return callback(null, true);
-
-        // Vérifier si l'origine est autorisée (string exacte OU regex)
         const isAllowed = allowedOrigins.some((allowed) => {
           if (typeof allowed === "string") return allowed === origin;
           if (allowed instanceof RegExp) return allowed.test(origin);
           return false;
         });
-
-        console.log(`[CORS] Origin: ${origin} - Allowed: ${isAllowed}`); // Log pour debug
-
         if (isAllowed) {
           callback(null, true);
         } else {
@@ -95,13 +98,12 @@ async function initializeApp() {
       optionsSuccessStatus: 200,
     }),
   );
-  // Health Checks
+
   app.get("/healthz", (req, res) => res.status(200).send("OK"));
   app.get("/api/health", (req, res) =>
     res.json({ status: "ok", timestamp: new Date().toISOString() }),
   );
 
-  // Route de debug pour tester la connexion
   app.get("/api/v1/ping", (req, res) => {
     res.json({
       message: "pong",
@@ -110,46 +112,20 @@ async function initializeApp() {
     });
   });
 
-  // API Routes - Imports avec extension .js pour compatibilité Vercel
   const apiV1 = express.Router();
-
-  apiV1.use("/auth", (await import("./server/src/routes/auth.js")).default);
-  apiV1.use("/user", (await import("./server/src/routes/user.js")).default);
-  apiV1.use(
-    "/transactions",
-    (await import("./server/src/routes/transactions.js")).default,
-  );
-  apiV1.use(
-    "/contacts",
-    (await import("./server/src/routes/contacts.js")).default,
-  );
-  apiV1.use(
-    "/friendship",
-    (await import("./server/src/routes/friendship.js")).default,
-  );
-  apiV1.use(
-    "/scheduler",
-    (await import("./server/src/routes/scheduler.js")).default,
-  );
-  apiV1.use(
-    "/services",
-    (await import("./server/src/routes/services.js")).default,
-  );
-  apiV1.use(
-    "/promotions",
-    (await import("./server/src/routes/promotions.js")).default,
-  );
-  apiV1.use("/banks", (await import("./server/src/routes/banks.js")).default);
-
-  // Route de test directe
-  app.get("/api/v1/test", (req, res) => {
-    res.json({ message: "Test route works!" });
-  });
+  apiV1.use("/auth", authRoutes);
+  apiV1.use("/user", userRoutes);
+  apiV1.use("/transactions", transactionsRoutes);
+  apiV1.use("/contacts", contactsRoutes);
+  apiV1.use("/friendship", friendshipRoutes);
+  apiV1.use("/scheduler", schedulerRoutes);
+  apiV1.use("/services", servicesRoutes);
+  apiV1.use("/promotions", promotionsRoutes);
+  apiV1.use("/banks", banksRoutes);
 
   app.use("/api/v1", apiV1);
   console.log(">>> [STARTUP] API routes mounted.");
 
-  // Fallback 404
   app.use((req, res) => {
     if (req.url.startsWith("/api")) {
       return res.status(404).json({
@@ -162,7 +138,6 @@ async function initializeApp() {
   console.log(">>> [READY] Application is fully initialized.");
 }
 
-// Start initialization
 initializeApp().catch((err) => {
   console.error("!!! [FATAL] Initialization error:", err);
 });
@@ -172,18 +147,11 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason, promise) => {
-  console.error(
-    "!!! [CRASH] Unhandled Rejection at:",
-    promise,
-    "reason:",
-    reason,
-  );
+  console.error("!!! [CRASH] Unhandled Rejection:", reason);
 });
 
-// ✅ Export pour Vercel
 export default app;
 
-// ✅ Démarrage local uniquement
 if (process.env.NODE_ENV !== "production") {
   const PORT = parseInt(process.env.PORT || "3000", 10);
   app.listen(PORT, "0.0.0.0", () => {
