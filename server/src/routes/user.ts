@@ -230,6 +230,54 @@ router.post(
   },
 );
 
+// ── Phase 2 — P2P : marquer TOUTES les notifications comme lues ─────────────
+router.post(
+  "/notifications/mark-all-read",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { error } = await supabase
+        .from("Notification")
+        .update({ isRead: true })
+        .eq("userId", userId)
+        .eq("isRead", false);
+
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Mark all read error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── Phase 2 — P2P : nombre de notifications non lues ─────────────────────────
+router.get(
+  "/notifications/unread-count",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { count, error } = await supabase
+        .from("Notification")
+        .select("id", { count: "exact", head: true })
+        .eq("userId", userId)
+        .eq("isRead", false);
+
+      if (error) throw error;
+      res.json({ unreadCount: count || 0 });
+    } catch (error) {
+      console.error("Unread count error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
 router.get("/tag", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;

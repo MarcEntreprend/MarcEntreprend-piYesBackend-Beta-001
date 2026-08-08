@@ -178,6 +178,63 @@ router.post("/sync", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
+// 1bis. SUGGESTIONS DE CONTACTS (Phase 2 — P2P)
+// Propose des utilisateurs piYès que le user n'a pas encore en contact,
+// avec un filtre de recherche optionnel (tag / nom / email / téléphone).
+router.get("/suggestions", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const q = (req.query.q as string) || "";
+    const limit = Math.min(
+      parseInt((req.query.limit as string) || "10", 10),
+      50,
+    );
+
+    // Ids des contacts déjà ajoutés par ce user
+    const { data: existing } = await supabase
+      .from("Contact")
+      .select("contactUserId, phone, email, tag");
+    const existingUserIds = new Set(
+      (existing || [])
+        .filter((c: any) => c.contactUserId)
+        .map((c: any) => c.contactUserId),
+    );
+
+    let query = supabase
+      .from("User")
+      .select("id, name, tag, phone, email, avatarUrl")
+      .neq("id", userId);
+
+    if (q) {
+      query = query.or(
+        `tag.ilike.%${q}%,name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%`,
+      );
+    }
+
+    const { data: candidates, error } = await query.limit(limit);
+    if (error) throw error;
+
+    const suggestions = (candidates || [])
+      .filter((u: any) => !existingUserIds.has(u.id))
+      .map((u: any) => ({
+        id: u.id,
+        name: u.name,
+        tag: u.tag,
+        phone: u.phone,
+        email: u.email,
+        avatarUrl: u.avatarUrl,
+        isUser: true,
+      }));
+
+    res.json({ suggestions });
+  } catch (error) {
+    console.error("Suggestions error:", error);
+    res.status(500).json({ error: "Failed to fetch suggestions" });
+  }
+});
+
 // 2. GET CONTACTS
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   try {

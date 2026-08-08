@@ -1,0 +1,1291 @@
+openapi: 3.0.3
+info:
+  title: piYès API
+  version: 1.0.0
+  description: |
+    API du service bancaire mobile piYès (Haïti). Base : `/api/v1`.
+
+    Caractéristiques :
+    - **Auth** : JWT bearer (24 h) + refresh token httpOnly (30 j). MFA par OTP (5 tentatives, TTL 15 min).
+    - **Ledger** : tous les mouvements de fonds passent par un journal en partie double
+      (fonctions Supabase `piyes_ledger_post`). Idempotence garantie par la clé
+      `Idempotency-Key` (générée automatiquement si absente).
+    - **Montants** : en **centimes de gourde HTG** (entiers positifs) dans les requêtes.
+    - **Erreurs** : format uniforme `{ "error": { "message", "code" } }`.
+    - **Temps réel** : les clients peuvent s'abonner aux changements Supabase
+      (User, Transaction, Contact, Notification).
+
+    Vitrine Open Banking : endpoints `/obp/v3.1.0/*` (voir tag `OpenBanking`).
+  contact:
+    name: piYès
+    email: paiements@piyes.ht
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Dev local (backend)
+  - url: http://localhost:3000
+    description: Dev local (racine – pour OBP)
+  - url: https://piyes-backend.vercel.app/api/v1
+    description: Production (Vercel)
+tags:
+  - name: Auth
+    description: Inscription, connexion, OTP, mot de passe oublié
+  - name: User
+    description: Profil, PIN, clés secondaires, QR, recherche
+  - name: Transactions
+    description: Transferts, dépôts, retraits, recharges, virements
+  - name: Contacts
+  - name: Friendship
+  - name: Scheduler
+    description: Paiements planifiés et rappels
+  - name: Services
+    description: Paiement de services et fournisseurs
+  - name: Promotions
+  - name: Banks
+    description: Banques disponibles et liaison de comptes
+  - name: OpenBanking
+    description: API publique Open Banking (OBP v3.1.0) et clés API tiers
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ------------------------------------------------------------------ AUTH
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Créer un compte
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "201":
+          description: Compte créé
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Connexion (email ou téléphone + mot de passe)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Connecté (ou MFA requis si nouvel appareil)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AuthResponse"
+                  - $ref: "#/components/schemas/MfaRequired"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /auth/verify-session-otp:
+    post:
+      tags: [Auth]
+      summary: Valider l'OTP de session (MFA) et obtenir le token final
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, otpCode]
+              properties:
+                requestId:
+                  {
+                    type: string,
+                    description: "Token temporaire renvoyé par /auth/login",
+                  }
+                otpCode: { type: string, minLength: 6 }
+      responses:
+        "200":
+          description: Session validée
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+  /auth/otp/request:
+    post:
+      tags: [Auth]
+      summary: Demander un code OTP
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: OTP envoyé
+  /auth/otp/resend:
+    post:
+      tags: [Auth]
+      summary: Renvoyer un code OTP
+      security: []
+      responses:
+        "200":
+          description: OTP renvoyé
+  /auth/otp/verify:
+    post:
+      tags: [Auth]
+      summary: Vérifier un code OTP
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, otpCode]
+              properties:
+                email: { type: string, format: email }
+                otpCode: { type: string }
+      responses:
+        "200":
+          description: OTP valide
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Demander la réinitialisation du mot de passe
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Email envoyé
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Réinitialiser le mot de passe
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, otpCode, newPassword]
+              properties:
+                email: { type: string, format: email }
+                otpCode: { type: string }
+                newPassword: { type: string, minLength: 6 }
+      responses:
+        "200":
+          description: Mot de passe réinitialisé
+  /auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Déconnecter toutes les sessions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Déconnecté
+
+  # ------------------------------------------------------------------ USER
+  /user/sync:
+    get:
+      tags: [User]
+      summary: Synchroniser les données de l'utilisateur connecté
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Profil, comptes, transactions, contacts, notifications
+  /user/profile:
+    post:
+      tags: [User]
+      summary: Mettre à jour le profil
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileRequest"
+      responses:
+        "200":
+          description: Profil mis à jour
+  /user/tag:
+    get:
+      tags: [User]
+      summary: Obtenir son tag @
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Tag de l'utilisateur
+  /user/search:
+    get:
+      tags: [User]
+      summary: Rechercher un utilisateur par tag
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Tag ou nom à rechercher
+      responses:
+        "200":
+          description: Résultats de recherche
+  /user/pin:
+    post:
+      tags: [User]
+      summary: Créer ou modifier le PIN (4 chiffres)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pin]
+              properties:
+                pin: { type: string, pattern: "^[0-9]{4}$" }
+      responses:
+        "200":
+          description: PIN enregistré
+  /user/pin/verify:
+    post:
+      tags: [User]
+      summary: Vérifier le PIN
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pin]
+              properties:
+                pin: { type: string, pattern: "^[0-9]{4}$" }
+      responses:
+        "200":
+          description: PIN valide
+  /user/avatar:
+    post:
+      tags: [User]
+      summary: Mettre à jour l'avatar
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Avatar mis à jour
+  /user/privacy:
+    post:
+      tags: [User]
+      summary: Mettre à jour les paramètres de confidentialité
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Paramètres enregistrés
+  /user/keys:
+    post:
+      tags: [User]
+      summary: Ajouter une clé secondaire (email/téléphone)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Clé ajoutée
+  /user/keys/check-tag:
+    get:
+      tags: [User]
+      summary: Vérifier la disponibilité d'un tag
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Disponibilité
+  /user/keys/{id}/verify:
+    post:
+      tags: [User]
+      summary: Vérifier une clé secondaire
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Clé vérifiée
+  /user/keys/{id}:
+    delete:
+      tags: [User]
+      summary: Supprimer une clé secondaire
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Clé supprimée
+  /user/qr:
+    get:
+      tags: [User]
+      summary: Obtenir le QR code de paiement
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: QR code
+  /user/by-phones:
+    post:
+      tags: [User]
+      summary: Résoudre des utilisateurs par numéros de téléphone
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phones]
+              properties:
+                phones: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: Utilisateurs trouvés
+  /user/notifications/mark-read:
+    post:
+      tags: [User]
+      summary: Marquer les notifications comme lues
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Notifications mises à jour
+  /user/notifications/mark-all-read:
+    post:
+      tags: [User]
+      summary: Marquer toutes les notifications comme lues
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Toutes les notifications marquées lues
+  /user/notifications/unread-count:
+    get:
+      tags: [User]
+      summary: Nombre de notifications non lues
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Nombre de notifications non lues
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unreadCount: { type: integer }
+  /user/contact-update/{contactId}:
+    patch:
+      tags: [User]
+      summary: Mettre à jour un contact
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - {
+            in: path,
+            name: contactId,
+            required: true,
+            schema: { type: string },
+          }
+      responses:
+        "200":
+          description: Contact mis à jour
+  /user/delete:
+    delete:
+      tags: [User]
+      summary: Supprimer son compte
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Compte supprimé
+
+  # ---------------------------------------------------------- TRANSACTIONS
+  /transactions:
+    get:
+      tags: [Transactions]
+      summary: Historique des transactions
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: limit, schema: { type: integer, default: 50 } }
+        - { in: query, name: offset, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Liste des transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+  /transactions/transfer:
+    post:
+      tags: [Transactions]
+      summary: Transfert P2P vers un contact (via ledger, idempotent)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferRequest"
+      responses:
+        "200":
+          description: Transfert effectué
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /transactions/recharge:
+    post:
+      tags: [Transactions]
+      summary: Recharge mobile (opérateur)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RechargeRequest"
+      responses:
+        "200":
+          description: Recharge effectuée
+  /transactions/deposit:
+    post:
+      tags: [Transactions]
+      summary: Dépôt sur un compte
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DepositWithdrawRequest"
+      responses:
+        "200":
+          description: Dépôt effectué
+  /transactions/withdraw:
+    post:
+      tags: [Transactions]
+      summary: Retrait d'un compte
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DepositWithdrawRequest"
+      responses:
+        "200":
+          description: Retrait effectué
+  /transactions/request:
+    post:
+      tags: [Transactions]
+      summary: Demander un paiement
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestPayment"
+      responses:
+        "200":
+          description: Demande créée
+  /transactions/schedule:
+    post:
+      tags: [Transactions]
+      summary: Planifier un paiement
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchedulePayment"
+      responses:
+        "200":
+          description: Paiement planifié
+  /transactions/scan:
+    post:
+      tags: [Transactions]
+      summary: Paiement par QR scanné (via ledger, idempotent)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data: { type: string, description: "Contenu du QR code" }
+                pin: { type: string, pattern: "^[0-9]{4}$" }
+      responses:
+        "200":
+          description: Paiement effectué
+  /transactions/inter-bank-transfer:
+    post:
+      tags: [Transactions]
+      summary: Virement inter-bancaire (legacy, comptes externes)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InterBankTransfer"
+      responses:
+        "200":
+          description: Virement effectué
+  /transactions/generate-qr:
+    post:
+      tags: [Transactions]
+      summary: Générer un QR de paiement (avec montant optionnel et expiration)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  {
+                    type: number,
+                    description: "Montant en HTG (optionnel ; s'il est fourni, QR de paiement pré-rempli)",
+                  }
+                description:
+                  {
+                    type: string,
+                    description: "Libellé du paiement (optionnel)",
+                  }
+                expiresInMinutes:
+                  {
+                    type: number,
+                    default: 5,
+                    description: "Durée de validité du QR en minutes",
+                  }
+      responses:
+        "200":
+          description: QR généré
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  qrData:
+                    {
+                      type: string,
+                      description: "QR encodé JSON (id, name, tag, amount?, expiry?)",
+                    }
+  /transactions/scan-qr:
+    post:
+      tags: [Transactions]
+      summary: Payer via QR scanné (alias de /transactions/scan, via ledger, idempotent)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qrData]
+              properties:
+                qrData:
+                  { type: string, description: "Contenu du QR code (JSON)" }
+                pin: { type: string, pattern: "^[0-9]{4}$" }
+                amount:
+                  {
+                    type: number,
+                    description: "Montant HTG si le QR n'en contient pas",
+                  }
+      responses:
+        "200":
+          description: Paiement effectué
+  /transactions/moncash/confirm:
+    post:
+      tags: [Transactions]
+      summary: Confirmation de paiement MonCash (anti-rejeu)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Paiement confirmé
+  /transactions/international:
+    post:
+      tags: [Transactions]
+      summary: Virement international
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                recipientName: { type: string }
+                country: { type: string }
+                method: { type: string }
+                amountHTG: { type: number }
+                currency: { type: string, default: USD }
+      responses:
+        "200":
+          description: Virement initié
+  /transactions/receipts/{id}:
+    get:
+      tags: [Transactions]
+      summary: Obtenir un reçu de transaction
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Reçu
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Receipt"
+  /transactions/reports:
+    get:
+      tags: [Transactions]
+      summary: Rapport de transactions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Rapport
+  /transactions/resolve/{key}:
+    get:
+      tags: [Transactions]
+      summary: Résoudre une clé de paiement (QR/tag)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: key, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Informations de paiement
+
+  # -------------------------------------------------------------- CONTACTS
+  /contacts:
+    get:
+      tags: [Contacts]
+      summary: Liste des contacts
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Liste des contacts
+  /contacts/sync:
+    post:
+      tags: [Contacts]
+      summary: Synchroniser les contacts du téléphone
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Contacts synchronisés
+  /contacts/suggestions:
+    get:
+      tags: [Contacts]
+      summary: Suggestions de contacts (utilisateurs piYès à découvrir)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - {
+            in: query,
+            name: q,
+            schema: { type: string },
+            description: "Recherche par tag / nom / email / téléphone",
+          }
+        - { in: query, name: limit, schema: { type: integer, default: 10 } }
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        tag: { type: string }
+                        phone: { type: string }
+                        email: { type: string }
+                        avatarUrl: { type: string }
+                        isUser: { type: boolean, default: true }
+  /contacts/update/{id}:
+    post:
+      tags: [Contacts]
+      summary: Mettre à jour un contact
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Contact mis à jour
+  /contacts/{id}:
+    patch:
+      tags: [Contacts]
+      summary: Modifier partiellement un contact
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Contact modifié
+    delete:
+      tags: [Contacts]
+      summary: Supprimer un contact
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Contact supprimé
+
+  # ------------------------------------------------------------ FRIENDSHIP
+  /friendship/request:
+    post:
+      tags: [Friendship]
+      summary: Envoyer une demande d'amitié
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Demande envoyée
+  /friendship/accept:
+    post:
+      tags: [Friendship]
+      summary: Accepter une demande
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Demande acceptée
+  /friendship/cancel:
+    delete:
+      tags: [Friendship]
+      summary: Annuler une demande
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Demande annulée
+  /friendship/status:
+    get:
+      tags: [Friendship]
+      summary: Statut de la relation
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Statut
+
+  # ------------------------------------------------------------- SCHEDULER
+  /scheduler:
+    get:
+      tags: [Scheduler]
+      summary: Liste des paiements planifiés
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Paiements planifiés
+  /scheduler/create:
+    post:
+      tags: [Scheduler]
+      summary: Créer un paiement planifié
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchedulePayment"
+      responses:
+        "200":
+          description: Paiement créé
+  /scheduler/confirm:
+    post:
+      tags: [Scheduler]
+      summary: Confirmer un paiement planifié
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Paiement confirmé
+  /scheduler/{id}/regenerate-qr:
+    post:
+      tags: [Scheduler]
+      summary: Régénérer le QR d'un paiement planifié
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: QR régénéré
+  /scheduler/{id}/reminders:
+    patch:
+      tags: [Scheduler]
+      summary: Mettre à jour les rappels
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Rappels mis à jour
+  /scheduler/{id}:
+    delete:
+      tags: [Scheduler]
+      summary: Supprimer un paiement planifié
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Paiement supprimé
+  /scheduler/by-token/{token}:
+    get:
+      tags: [Scheduler]
+      summary: Récupérer un paiement par token (lien partagé)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: token, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Paiement trouvé
+  /scheduler/active-between:
+    get:
+      tags: [Scheduler]
+      summary: Paiements actifs entre deux dates
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: start, schema: { type: string, format: date } }
+        - { in: query, name: end, schema: { type: string, format: date } }
+      responses:
+        "200":
+          description: Paiements actifs
+  /scheduler/trigger-reminders:
+    post:
+      tags: [Scheduler]
+      summary: Déclencher les rappels (cron interne)
+      security: []
+      parameters:
+        - {
+            in: header,
+            name: x-cron-secret,
+            required: true,
+            schema: { type: string },
+          }
+      responses:
+        "200":
+          description: Rappels envoyés
+
+  # -------------------------------------------------------------- SERVICES
+  /services/list:
+    get:
+      tags: [Services]
+      summary: Liste des services payables (fournisseurs)
+      security: []
+      responses:
+        "200":
+          description: Liste des services
+  /services/pay:
+    post:
+      tags: [Services]
+      summary: Payer un service (via ledger, montant strictement positif)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServicePay"
+      responses:
+        "200":
+          description: Paiement effectué
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ------------------------------------------------------------ PROMOTIONS
+  /promotions:
+    get:
+      tags: [Promotions]
+      summary: Liste des promotions
+      security: []
+      responses:
+        "200":
+          description: Promotions
+  # ---------------------------------------------------------------- BANKS
+  /banks/available:
+    get:
+      tags: [Banks]
+      summary: Banques disponibles
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Liste des banques
+  /banks/link:
+    post:
+      tags: [Banks]
+      summary: Lier un compte externe (Unibank, Sogebank, MonCash, ...)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bankId, username]
+              properties:
+                bankId: { type: string }
+                username: { type: string }
+                password: { type: string }
+                credentials:
+                  { type: object, description: "Forme imbriquée alternative" }
+      responses:
+        "200":
+          description: Compte lié
+  /banks/{id}:
+    delete:
+      tags: [Banks]
+      summary: Délier un compte (soft delete, solde conservé)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Compte délié
+  /banks/{id}/transactions:
+    get:
+      tags: [Banks]
+      summary: Transactions d'un compte lié
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Transactions
+
+  # ------------------------------------------------------------ OPENBANKING
+  # API publique Open Banking (Phase 4) : endpoints OBP v3.1.0 + clés API tiers.
+  # La spec OBP elle-même est le swagger.json officiel (OBP-API v3.1.0).
+  /obp/v3.1.0/keys:
+    post:
+      tags: [OpenBanking]
+      summary: Créer une clé API tiers (la clé brute n'est affichée qu'une fois)
+      x-servers:
+        - url: http://localhost:3000
+        - url: https://piyes-backend.vercel.app
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, description: "Nom de la clé" }
+      responses:
+        "201":
+          description: Clé créée
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey: { type: string }
+                  id: { type: string }
+                  name: { type: string }
+                  status: { type: string }
+    get:
+      tags: [OpenBanking]
+      summary: Lister les clés API (jamais les hashes)
+      x-servers:
+        - url: http://localhost:3000
+        - url: https://piyes-backend.vercel.app
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Liste des clés
+  /obp/v3.1.0/keys/{id}:
+    delete:
+      tags: [OpenBanking]
+      summary: Révoquer une clé API tiers
+      x-servers:
+        - url: http://localhost:3000
+        - url: https://piyes-backend.vercel.app
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Clé révoquée
+  /obp/v3.1.0/banks:
+    get:
+      tags: [OpenBanking]
+      summary: Liste des banques (proxy OBP ou mock local)
+      x-servers:
+        - url: http://localhost:3000
+        - url: https://piyes-backend.vercel.app
+      security: [{ apiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Banques
+  /obp/v3.1.0/accounts/public:
+    get:
+      tags: [OpenBanking]
+      summary: Comptes publics (proxy OBP ou mock local)
+      x-servers:
+        - url: http://localhost:3000
+        - url: https://piyes-backend.vercel.app
+      security: [{ apiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Comptes publics
+  /obp/v3.1.0/banks/{bankId}/accounts/{accountId}/{viewId}/transactions:
+    get:
+      tags: [OpenBanking]
+      summary: Transactions d'un compte (proxy OBP ou mock local)
+      x-servers:
+        - url: http://localhost:3000
+        - url: https://piyes-backend.vercel.app
+      security: [{ apiKeyAuth: [] }]
+      parameters:
+        - { in: path, name: bankId, required: true, schema: { type: string } }
+        - {
+            in: path,
+            name: accountId,
+            required: true,
+            schema: { type: string },
+          }
+        - { in: path, name: viewId, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Transactions
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Clé API tiers (Phase 4) — aussi acceptée via Bearer.
+  responses:
+    BadRequest:
+      description: Requête invalide
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Unauthorized:
+      description: Non authentifié ou token expiré
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Forbidden:
+      description: Accès refusé
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+  schemas:
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message]
+          properties:
+            message: { type: string }
+            code: { type: string, example: INVALID_CREDENTIALS }
+
+    LoginRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        phone: { type: string }
+        password: { type: string, minLength: 6 }
+        device: { type: string }
+      oneOf:
+        - required: [email, password]
+        - required: [phone, password]
+
+    SignupRequest:
+      type: object
+      required: [firstName, lastName, password]
+      properties:
+        firstName: { type: string }
+        lastName: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        password: { type: string, minLength: 6 }
+        device: { type: string }
+        accountType:
+          { type: string, enum: [individual, business], default: individual }
+        companyName: { type: string }
+        sector: { type: string }
+        nif: { type: string }
+        address: { type: string }
+
+    AuthResponse:
+      type: object
+      required: [user, token]
+      properties:
+        user:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            tag: { type: string }
+            email: { type: string }
+            phone: { type: string }
+            accountNumber: { type: string }
+            avatarUrl: { type: string }
+            balance:
+              { type: number, description: "Solde en gourdes (décimales)" }
+            isDeviceVerified: { type: boolean }
+            hasPin: { type: boolean }
+        token: { type: string, description: "JWT d'acces (24 h)" }
+
+    MfaRequired:
+      type: object
+      properties:
+        mfaRequired: { type: boolean, example: true }
+        requestId: { type: string }
+        message: { type: string }
+
+    TransferRequest:
+      type: object
+      required: [amount, contactId, pin]
+      properties:
+        amount:
+          {
+            type: number,
+            minimum: 0,
+            exclusiveMinimum: true,
+            description: "En centimes HTG",
+          }
+        contactId: { type: string }
+        description: { type: string }
+        pin: { type: string, pattern: "^[0-9]{4}$" }
+        schedulerId: { type: string }
+
+    RechargeRequest:
+      type: object
+      required: [phoneNumber, amount, operatorId, accountId, pin]
+      properties:
+        phoneNumber: { type: string }
+        amount: { type: number, minimum: 0, exclusiveMinimum: true }
+        operatorId: { type: string }
+        accountId: { type: string }
+        pin: { type: string, pattern: "^[0-9]{4}$" }
+
+    DepositWithdrawRequest:
+      type: object
+      required: [amount, accountId]
+      properties:
+        amount: { type: number, minimum: 0, exclusiveMinimum: true }
+        accountId: { type: string }
+        pin: { type: string, pattern: "^[0-9]{4}$" }
+
+    RequestPayment:
+      type: object
+      required: [amount]
+      properties:
+        amount: { type: number, minimum: 0, exclusiveMinimum: true }
+        payer: { type: string }
+        description: { type: string }
+        key: { type: string }
+
+    SchedulePayment:
+      type: object
+      required: [amount, counterparty, dueDate, type]
+      properties:
+        amount: { type: number, minimum: 0, exclusiveMinimum: true }
+        counterparty: { type: string }
+        dueDate: { type: string, format: date-time }
+        title: { type: string }
+        type: { type: string, enum: [incoming, outgoing] }
+        frequency:
+          { type: string, enum: [once, weekly, monthly], default: once }
+
+    InterBankTransfer:
+      type: object
+      required: [sourceId, destId, amount]
+      properties:
+        sourceId: { type: string }
+        destId: { type: string }
+        amount: { type: number, minimum: 0, exclusiveMinimum: true }
+        note: { type: string }
+        pin: { type: string, pattern: "^[0-9]{4}$" }
+
+    ServicePay:
+      type: object
+      required: [providerTag, amount]
+      properties:
+        providerTag: { type: string, minLength: 1 }
+        amount: { type: number, minimum: 0, exclusiveMinimum: true }
+        description: { type: string }
+
+    Transaction:
+      type: object
+      properties:
+        id: { type: string }
+        type:
+          {
+            type: string,
+            enum:
+              [
+                DEPOSIT,
+                WITHDRAW,
+                TRANSFER,
+                CARD_PAYMENT,
+                INTERNATIONAL,
+                RECHARGE,
+                REQUEST,
+                SCHEDULED,
+                INTERBANK_OUT,
+              ],
+          }
+        amount:
+          { type: integer, description: "Centimes HTG (signé selon role)" }
+        description: { type: string }
+        date: { type: string, format: date-time }
+        role: { type: string, enum: [PAYER, RECEIVER] }
+        counterpartyName: { type: string }
+        userId: { type: string }
+        accountId: { type: string }
+        external_id: { type: string }
+
+    Receipt:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        amount: { type: number }
+        description: { type: string }
+        date: { type: string, format: date-time }
+        role: { type: string }
+        counterpartyName: { type: string }
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        name: { type: string }
+        phone: { type: string }
+        email: { type: string, format: email }
+        address: { type: string }
+        nationality: { type: string }
+        timezone: { type: string }

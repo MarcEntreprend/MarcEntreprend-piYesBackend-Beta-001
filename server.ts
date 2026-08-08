@@ -7,7 +7,7 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import { fileURLToPath } from "url";
 
-// ✅ IMPORTS AVEC .ts
+// ✅ IMPORTS AVEC .ts (pour tsx)
 import authRoutes from "./server/src/routes/auth.ts";
 import userRoutes from "./server/src/routes/user.ts";
 import transactionsRoutes from "./server/src/routes/transactions.ts";
@@ -18,9 +18,9 @@ import servicesRoutes from "./server/src/routes/services.ts";
 import promotionsRoutes from "./server/src/routes/promotions.ts";
 import banksRoutes from "./server/src/routes/banks.ts";
 
-console.log(">>> [SERVER] authRoutes =", authRoutes);
-console.log(">>> [SERVER] typeof authRoutes =", typeof authRoutes);
-console.log(">>> [SERVER] authRoutes.use =", typeof authRoutes?.use);
+// ✅ PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
+import obpKeysRoutes from "./server/src/routes/obpKeys.ts";
+import obpFacadeRoutes from "./server/src/routes/obpFacade.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +30,7 @@ const app = express();
 async function initializeApp() {
   console.log(">>> [STARTUP] Beginning background initialization...");
 
+  // Cron de rappels (dev uniquement)
   if (process.env.NODE_ENV !== "production") {
     setInterval(async () => {
       try {
@@ -48,10 +49,12 @@ async function initializeApp() {
     }, 60 * 1000);
   }
 
+  // Middleware
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ limit: "10mb", extended: true }));
   app.use(cookieParser());
 
+  // CORS
   const allowedOrigins: (string | RegExp)[] = [
     "http://localhost:5173",
     "http://localhost:4173",
@@ -94,11 +97,12 @@ async function initializeApp() {
       },
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
       optionsSuccessStatus: 200,
     }),
   );
 
+  // Health Checks
   app.get("/healthz", (req, res) => res.status(200).send("OK"));
   app.get("/api/health", (req, res) =>
     res.json({ status: "ok", timestamp: new Date().toISOString() }),
@@ -112,6 +116,9 @@ async function initializeApp() {
     });
   });
 
+  // ============================================================
+  // ROUTES API V1 (prefix /api/v1)
+  // ============================================================
   const apiV1 = express.Router();
   apiV1.use("/auth", authRoutes);
   apiV1.use("/user", userRoutes);
@@ -124,10 +131,29 @@ async function initializeApp() {
   apiV1.use("/banks", banksRoutes);
 
   app.use("/api/v1", apiV1);
-  console.log(">>> [STARTUP] API routes mounted.");
+  console.log(">>> [STARTUP] API routes mounted at /api/v1");
 
+  // ============================================================
+  // PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
+  // ============================================================
+  app.use("/obp/v3.1.0/keys", obpKeysRoutes);
+  app.use("/obp/v3.1.0", obpFacadeRoutes);
+  console.log(">>> [STARTUP] OBP routes mounted at /obp/v3.1.0");
+
+  // ============================================================
+  // SWAGGER UI
+  // ============================================================
+  app.use(
+    "/api-docs",
+    (await import("./server/src/routes/swagger.js")).default,
+  );
+  console.log(">>> [STARTUP] Swagger UI mounted at /api-docs");
+
+  // ============================================================
+  // FALLBACK 404
+  // ============================================================
   app.use((req, res) => {
-    if (req.url.startsWith("/api")) {
+    if (req.url.startsWith("/api") || req.url.startsWith("/obp")) {
       return res.status(404).json({
         error: { message: `Route ${req.url} not found`, code: "NOT_FOUND" },
       });
@@ -138,6 +164,7 @@ async function initializeApp() {
   console.log(">>> [READY] Application is fully initialized.");
 }
 
+// Start initialization
 initializeApp().catch((err) => {
   console.error("!!! [FATAL] Initialization error:", err);
 });
@@ -150,8 +177,10 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("!!! [CRASH] Unhandled Rejection:", reason);
 });
 
+// Export pour Vercel
 export default app;
 
+// Démarrage local
 if (process.env.NODE_ENV !== "production") {
   const PORT = parseInt(process.env.PORT || "3000", 10);
   app.listen(PORT, "0.0.0.0", () => {

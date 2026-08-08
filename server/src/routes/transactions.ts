@@ -1031,7 +1031,55 @@ router.post("/schedule", authMiddleware, async (req: AuthRequest, res) => {
 });
 
 // 7. QR SCAN / PAY (avec balance_before / balance_after)
-router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
+// 7bis. GENERATE QR (Phase 2 — P2P) : QR de paiement avec montant optionnel
+router.post("/generate-qr", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { amount, description, expiresInMinutes } = req.body;
+
+    const { data: user } = await supabase
+      .from("User")
+      .select("id, name, tag, phone, email, avatarUrl")
+      .eq("id", userId)
+      .single();
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const qrPayload: any = {
+      id: user.id,
+      name: user.name,
+      tag: user.tag,
+      phone: user.phone,
+      email: user.email,
+      avatarUrl: user.avatarUrl
+        ? `${user.avatarUrl}${user.avatarUrl.includes("?") ? "&" : "?"}t=${Date.now()}`
+        : null,
+    };
+
+    // Si un montant est fourni → QR de paiement (montant pré-rempli + expiration)
+    if (amount !== undefined && amount !== null) {
+      const amountNum = Number(amount);
+      if (isNaN(amountNum) || amountNum <= 0) {
+        return res.status(400).json({
+          error: { message: "Amount invalide", code: "INVALID_AMOUNT" },
+        });
+      }
+      qrPayload.amount = Math.round(amountNum * 100); // centimes HTG
+      if (description) qrPayload.description = description;
+      const ttlMin = expiresInMinutes ? Number(expiresInMinutes) : 5;
+      qrPayload.expiry = Date.now() + ttlMin * 60 * 1000;
+    }
+
+    res.json({ qrData: JSON.stringify(qrPayload) });
+  } catch (error) {
+    console.error("generate-qr error:", error);
+    res.status(500).json({ error: "Failed to generate QR data" });
+  }
+});
+
+// 7. SCAN QR (paiement) — handler partagé avec /scan-qr (Phase 2)
+const scanQrHandler = async (req: AuthRequest, res: any) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -1275,7 +1323,11 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
     const mapped = ledgerErrorResponse(error);
     res.status(mapped.status).json(mapped.body);
   }
-});
+};
+
+// Paiement par QR Code (Phase 2 — P2P) : /scan (legacy) + /scan-qr (nouveau)
+router.post("/scan", authMiddleware, scanQrHandler);
+router.post("/scan-qr", authMiddleware, scanQrHandler);
 
 // 8. HISTORY (unchanged)
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
