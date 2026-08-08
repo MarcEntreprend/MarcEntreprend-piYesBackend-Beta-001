@@ -58,6 +58,7 @@ async function initializeApp() {
     "http://localhost:3000",
     "http://192.168.15.2:5173",
     "http://192.168.15.2:3000",
+    "http://192.168.15.4:3000",
     process.env.FRONTEND_URL || "",
     "capacitor://localhost",
     "http://capacitor.localhost",
@@ -125,6 +126,13 @@ async function initializeApp() {
 
   app.use("/api/v1", apiV1);
   console.log(">>> [STARTUP] API routes mounted.");
+
+  // ===== ROUTE SWAGGER UI =====
+  app.use(
+    "/api-docs",
+    (await import("./server/src/routes/swagger.js")).default,
+  );
+  console.log(">>> [STARTUP] Swagger UI mounted at /api-docs");
 
   app.use((req, res) => {
     if (req.url.startsWith("/api")) {
