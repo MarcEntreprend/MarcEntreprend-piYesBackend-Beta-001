@@ -15,7 +15,8 @@
 // validée via apiKeyService (table piyes_api_key).
 //
 // Montage dans server.ts :
-//   app.use("/obp", (await import("./server/src/routes/obpFacade.js")).default);
+//   app.use("/obp/v3.1.0", (await import("./server/src/routes/obpFacade.js")).default);
+// Les routes ci-dessous sont donc relatives à /obp/v3.1.0 (pas de préfixe répété).
 
 import express from "express";
 import { supabase } from "../supabase.js";
@@ -66,7 +67,7 @@ async function proxy(path: string, init?: RequestInit): Promise<Response> {
 }
 
 // GET /obp/v3.1.0/banks
-router.get("/v3.1.0/banks", apiKeyAuth, async (req, res) => {
+router.get("/banks", apiKeyAuth, async (req, res) => {
   try {
     if (OBP_BASE_URL) {
       const r = await proxy("/banks");
@@ -94,7 +95,7 @@ router.get("/v3.1.0/banks", apiKeyAuth, async (req, res) => {
 });
 
 // GET /obp/v3.1.0/accounts/public
-router.get("/v3.1.0/accounts/public", apiKeyAuth, async (req, res) => {
+router.get("/accounts/public", apiKeyAuth, async (req, res) => {
   try {
     if (OBP_BASE_URL) {
       const r = await proxy("/accounts/public");
@@ -122,7 +123,7 @@ router.get("/v3.1.0/accounts/public", apiKeyAuth, async (req, res) => {
 
 // GET /obp/v3.1.0/banks/:bankId/accounts/:accountId/:viewId/transactions
 router.get(
-  "/v3.1.0/banks/:bankId/accounts/:accountId/:viewId/transactions",
+  "/banks/:bankId/accounts/:accountId/:viewId/transactions",
   apiKeyAuth,
   async (req, res) => {
     try {
