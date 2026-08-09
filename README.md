@@ -157,6 +157,10 @@ npm run dev
 
 npx tsx server.ts
 
+# voir UI swagger
+
+http://localhost:3000/api-docs
+
 ---
 
 ## effacer le cache
