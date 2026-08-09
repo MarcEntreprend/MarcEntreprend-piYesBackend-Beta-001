@@ -243,15 +243,41 @@ curl http://192.168.15.2:3000/obp/v3.1.0/banks -H "X-API-Key: piyes_..."
 | `SUPABASE_URL` / `SUPABASE_ANON_KEY`                                  | oui    | Client Supabase                |
 | `PORT`                                                                | non    | Défaut 3000                    |
 | `OBP_BASE_URL` / `OBP_USERNAME` / `OBP_PASSWORD` / `OBP_CONSUMER_KEY` | non    | API publique OBP (mode proxy)  |
+| `RATE_LIMIT_GLOBAL` / `AUTH` / `OTP` / `PIN` / `FUNDS` / `APIKEY`     | non    | Seuils de rate limiting        |
+| `RESEND_API_KEY` / `OTP_FROM_EMAIL`                                   | non    | Envoi OTP par email            |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM`            | non    | Envoi OTP par SMS              |
 
-## 10. Limitations connues
+## 10. Sécurité (Phase 6)
+
+- **Rate limiting** (`express-rate-limit`) : limite globale sur `/api/v1`
+  (120 req/min), limites strictes sur `/auth/login`, `/auth/otp/*`,
+  `/auth/forgot-password`, `/auth/reset-password`, `/user/pin/verify`,
+  `/transactions/*` et `/obp/v3.1.0/keys`. Réponse `429 TOO_MANY_REQUESTS`.
+- **Headers de sécurité** : `helmet` (CSP autorisant `unpkg.com` pour Swagger UI,
+  HSTS, nosniff, frame-ancestors, etc.).
+- **OTP persisté** : les codes sont stockés **hachés** (SHA-256) dans la table
+  `otp_challenge` (jamais en clair), consommés une seule fois, limités à
+  5 tentatives, valables 15 min. Livraison : **Resend** (email) ou **Twilio**
+  (SMS `+509`), avec fallback log console en dev.
+- **Sessions & refresh tokens** :
+  - `POST /auth/refresh` : rotation du refresh token (cookie httpOnly),
+    ancien token remplacé en base. Un token réutilisé (rejeu) purge toutes
+    les sessions de l'utilisateur.
+  - `authMiddleware` vérifie la **session en base** (`isVerified`, non
+    expirée) à chaque requête → un `logout-all` révoque immédiatement les
+    access tokens.
+  - JWT signés avec `issuer`/`audience`/`jti` explicites.
+- **errorHandler** centralisé : les erreurs 500 n'exposent jamais le stack en
+  production.
+
+## 11. Limitations connues
 
 - `/transactions/inter-bank-transfer` reste legacy : il cible des comptes
   externes **hors ledger** (pas de journal en partie double).
 - Les erreurs de validation Zod sont renvoyées en 400 avec `error.message`.
-- Le refresh token est un cookie httpOnly (natif) ; la révocation des sessions
-  est un chantier de sécurité distinct (hors Phases 2/4 décrites ici).
 - Les endpoints OBP en mode local servent une **vue lecture seule** de démo :
   ils ne sont jamais source de vérité (le ledger reste la référence).
 - La validation de la clé API se fait par hash SHA-256 : un vol de la table
   `piyes_api_key` ne permet pas de réutiliser les clés.
+- Le SMS OTP (Twilio) ne peut être livré qu'à des numéros réels ; sans
+  `TWILIO_*`, les codes sont affichés en console (dév).

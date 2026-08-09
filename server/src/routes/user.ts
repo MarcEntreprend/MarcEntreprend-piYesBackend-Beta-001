@@ -1,8 +1,13 @@
 // server/src/routes/user.ts
 import express from "express";
 import { authMiddleware, AuthRequest } from "../middleware.js";
-import { supabase } from "../supabase.js";
-import { otpService } from "../services/otpService.js";
+import { supabase, supabaseService } from "../supabase.js";
+import {
+  createOtpChallenge,
+  verifyOtpChallenge,
+  getOtpChallengeMetadata,
+} from "../services/otpService.js";
+import { sendOtp } from "../services/otpDeliveryService.js";
 import crypto from "crypto";
 
 const router = express.Router();
@@ -447,7 +452,19 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
         });
       }
       const target = emailChanged ? email.toLowerCase() : normalizedPhone;
-      const isValid = otpService.verifyOtp(target, otpCode);
+      // Retrouve le challenge actif le plus récent pour la cible
+      const { data: challenge } = await supabaseService
+        .from("otp_challenge")
+        .select("id")
+        .eq("target", target)
+        .is("consumed_at", null)
+        .gt("expires_at", new Date().toISOString())
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const isValid = challenge?.id
+        ? await verifyOtpChallenge(challenge.id, otpCode)
+        : false;
       if (!isValid) {
         return res.status(400).json({
           error: { message: "Code invalide ou expiré", code: "INVALID_OTP" },
@@ -771,17 +788,24 @@ router.post("/keys", authMiddleware, async (req: AuthRequest, res) => {
       if (error) throw error;
       return res.json(key);
     } else {
-      // email or phone - Use centralized otpService
+      // email or phone - challenge OTP avec métadonnées
       const requestId = crypto.randomUUID();
-      otpService.generateOtp(requestId, {
+      const target = cleanValue;
+      const challenge = await createOtpChallenge(target, "key_creation", {
         type,
         value: cleanValue,
         userId,
       });
+      if (!challenge) {
+        return res
+          .status(500)
+          .json({ error: "Failed to create OTP challenge" });
+      }
+      await sendOtp(target, challenge.code, "vérification d'une clé");
 
       // Return a "pending" key object
       return res.json({
-        id: requestId,
+        id: challenge.id,
         userId,
         type,
         value: cleanValue,
@@ -830,14 +854,14 @@ router.post(
         return res.status(400).json({ error: "Code OTP requis" });
       }
 
-      const isValid = otpService.verifyOtp(id, code, false);
+      const isValid = await verifyOtpChallenge(id, code, false);
       if (!isValid) {
         return res.status(400).json({
           error: { message: "Code invalide ou expiré", code: "INVALID_OTP" },
         });
       }
 
-      const metadata = otpService.getMetadata(id);
+      const metadata = await getOtpChallengeMetadata(id);
       if (!metadata || metadata.userId !== userId) {
         return res.status(403).json({ error: "Forbidden or session expired" });
       }
@@ -853,7 +877,7 @@ router.post(
 
       if (error) throw error;
 
-      otpService.verifyOtp(id, code, true);
+      await verifyOtpChallenge(id, code, true);
       return res.json(true);
     } catch (error) {
       console.error("Verify key error:", error);

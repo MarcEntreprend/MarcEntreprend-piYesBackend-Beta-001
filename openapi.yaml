@@ -200,6 +200,24 @@ paths:
       responses:
         "200":
           description: Déconnecté
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Renouveler l'access token via le refresh token (cookie httpOnly)
+      description: |
+        Rotation du refresh token : un nouveau refresh token est émis et
+        l'ancien est révoqué en base. Un refresh token réutilisé (rejeu)
+        purge toutes les sessions de l'utilisateur.
+      security: []
+      responses:
+        "200":
+          description: Nouvel access token + nouveau refresh token (cookie)
+        "401":
+          description: Refresh token manquant, invalide ou session révoquée
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
 
   # ------------------------------------------------------------------ USER
   /user/sync:
@@ -1095,6 +1113,12 @@ components:
             $ref: "#/components/schemas/ApiError"
     Forbidden:
       description: Accès refusé
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    TooManyRequests:
+      description: Trop de requêtes (rate limiting) — code TOO_MANY_REQUESTS
       content:
         application/json:
           schema:

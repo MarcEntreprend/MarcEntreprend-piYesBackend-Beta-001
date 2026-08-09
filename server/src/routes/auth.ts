@@ -4,10 +4,20 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { supabase } from "../supabase.js";
-import { otpService } from "../services/otpService.js";
+import { supabase, supabaseService } from "../supabase.js";
+import {
+  createOtpChallenge,
+  verifyOtpChallenge,
+  hasActiveChallenge,
+} from "../services/otpService.js";
+import { sendOtp } from "../services/otpDeliveryService.js";
 import { loginSchema, signupSchema } from "../../../shared/schemas.js";
-import { authMiddleware, AuthRequest } from "../middleware.js";
+import {
+  authMiddleware,
+  AuthRequest,
+  JWT_ISSUER,
+  JWT_AUDIENCE,
+} from "../middleware.js";
 
 const router = express.Router();
 
@@ -29,9 +39,140 @@ router.post("/logout-all", authMiddleware, async (req: AuthRequest, res) => {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     await supabase.from("Session").delete().eq("userId", userId);
-    res.clearCookie("refreshToken");
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
+    });
     res.json({ success: true, message: "Logged out from all devices" });
   } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ============================================================
+// POST /auth/refresh
+// Renouvelle l'access token via le refresh token (cookie httpOnly).
+// Rotation : un nouveau refresh token est émis, l'ancien est remplacé
+// en base. Si un refresh token signé n'existe plus en base (rejeu d'un
+// token révoqué), toutes les sessions de l'utilisateur sont purgées.
+// ============================================================
+router.post("/refresh", async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refreshToken;
+    if (!refreshToken) {
+      return res.status(401).json({
+        error: { message: "Refresh token manquant", code: "UNAUTHORIZED" },
+      });
+    }
+
+    let payload: any;
+    try {
+      payload = jwt.verify(refreshToken, REFRESH_SECRET, {
+        algorithms: ["HS256"],
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+      });
+    } catch {
+      return res.status(401).json({
+        error: { message: "Refresh token invalide", code: "UNAUTHORIZED" },
+      });
+    }
+
+    const { data: session, error } = await supabase
+      .from("Session")
+      .select("*")
+      .eq("token", refreshToken)
+      .eq("userId", payload.id)
+      .maybeSingle();
+
+    if (error || !session) {
+      // Token signé mais absent en base → rejeu suspect : purge les sessions
+      await supabase.from("Session").delete().eq("userId", payload.id);
+      res.clearCookie("refreshToken", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "none",
+      });
+      return res.status(401).json({
+        error: {
+          message: "Session révoquée. Reconnectez-vous.",
+          code: "UNAUTHORIZED",
+        },
+      });
+    }
+
+    if (!session.isVerified) {
+      return res.status(401).json({
+        error: {
+          message: "Session non vérifiée (MFA requis)",
+          code: "UNAUTHORIZED",
+        },
+      });
+    }
+    if (new Date(session.expiresAt).getTime() < Date.now()) {
+      await supabase.from("Session").delete().eq("id", session.id);
+      return res.status(401).json({
+        error: { message: "Session expirée", code: "UNAUTHORIZED" },
+      });
+    }
+
+    const { data: user } = await supabase
+      .from("User")
+      .select("id, email")
+      .eq("id", payload.id)
+      .maybeSingle();
+    if (!user) {
+      return res.status(401).json({
+        error: { message: "Utilisateur introuvable", code: "UNAUTHORIZED" },
+      });
+    }
+
+    const newAccessToken = jwt.sign(
+      { id: user.id, email: user.email },
+      ACCESS_SECRET,
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+    const newRefreshToken = jwt.sign(
+      { id: user.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+
+    // Rotation : remplace l'ancien refresh token en base
+    await supabase
+      .from("Session")
+      .update({
+        token: newRefreshToken,
+        expiresAt: new Date(
+          Date.now() + 30 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      })
+      .eq("id", session.id);
+
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({
+      token: newAccessToken,
+      user: { id: user.id, email: user.email },
+    });
+  } catch (error) {
+    console.error("Refresh error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -221,10 +362,20 @@ router.post("/signup", async (req, res) => {
 
     const token = jwt.sign({ id: user.id, email: user.email }, ACCESS_SECRET, {
       expiresIn: "24h",
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+      jwtid: crypto.randomUUID(),
     });
-    const refreshToken = jwt.sign({ id: user.id }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
+    const refreshToken = jwt.sign(
+      { id: user.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
 
     // Create session
     const { v4: uuidv4session } = await import("uuid");
@@ -350,10 +501,17 @@ router.post("/login", async (req, res) => {
       const tempToken = jwt.sign(
         { id: user.id, isPending: true },
         REFRESH_SECRET,
-        { expiresIn: "10m" },
+        { expiresIn: "10m", issuer: JWT_ISSUER, audience: JWT_AUDIENCE },
       );
-      const otpCode = otpService.generateOtp(tempToken);
+      const target = user.email || user.phone || "";
+      const challenge = await createOtpChallenge(target, "login_mfa");
+      if (!challenge) {
+        return res
+          .status(500)
+          .json({ error: "Failed to create OTP challenge" });
+      }
       const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+      await sendOtp(target, challenge.code, "connexion");
 
       // Create a pending session
       const { v4: uuidv4 } = await import("uuid");
@@ -365,8 +523,9 @@ router.post("/login", async (req, res) => {
           token: tempToken,
           device,
           expiresAt: otpExpiresAt.toISOString(),
-          otpCode,
+          otpCode: null,
           otpExpiresAt: otpExpiresAt.toISOString(),
+          challengeId: challenge.id,
           isVerified: false,
           createdAt: new Date().toISOString(),
         });
@@ -386,10 +545,20 @@ router.post("/login", async (req, res) => {
     // No other device, or same device
     const token = jwt.sign({ id: user.id, email: user.email }, ACCESS_SECRET, {
       expiresIn: "24h",
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+      jwtid: crypto.randomUUID(),
     });
-    const refreshToken = jwt.sign({ id: user.id }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
+    const refreshToken = jwt.sign(
+      { id: user.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
 
     const { v4: uuidv4login } = await import("uuid");
     const { error: loginSessionError } = await supabase.from("Session").insert({
@@ -452,8 +621,9 @@ router.post("/verify-session-otp", async (req, res) => {
       });
     }
 
-    const otpValid =
-      otpService.verifyOtp(requestId, code, false) || session.otpCode === code;
+    const otpValid = session.challengeId
+      ? await verifyOtpChallenge(session.challengeId, code)
+      : false;
     const notExpired =
       !session.otpExpiresAt || new Date() <= new Date(session.otpExpiresAt);
 
@@ -469,13 +639,25 @@ router.post("/verify-session-otp", async (req, res) => {
       .eq("userId", session.userId)
       .neq("token", requestId);
 
-    const refreshToken = jwt.sign({ id: session.userId }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
+    const refreshToken = jwt.sign(
+      { id: session.userId, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
     const token = jwt.sign(
       { id: session.userId, email: session.user.email },
       ACCESS_SECRET,
-      { expiresIn: "24h" },
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
     );
 
     await supabase
@@ -540,7 +722,21 @@ router.post("/otp/request", async (req, res) => {
       target = target.toLowerCase();
     }
 
-    otpService.generateOtp(target);
+    const existing = await hasActiveChallenge(target, "generic");
+    if (existing) {
+      return res.status(429).json({
+        error: {
+          message: "Un code est déjà actif. Réessayez plus tard.",
+          code: "OTP_ALREADY_ACTIVE",
+        },
+      });
+    }
+
+    const challenge = await createOtpChallenge(target, "generic");
+    if (!challenge) {
+      return res.status(500).json({ error: "Failed to create OTP challenge" });
+    }
+    await sendOtp(target, challenge.code, "vérification");
 
     res.json({
       success: true,
@@ -585,8 +781,12 @@ router.post("/forgot-password", async (req, res) => {
     }
 
     console.log(`[FORGOT PASSWORD] Generating OTP for target: "${target}"`);
-    const otpCode = otpService.generateOtp(target);
+    const challenge = await createOtpChallenge(target, "password_reset");
+    if (!challenge) {
+      return res.status(500).json({ error: "Failed to create OTP challenge" });
+    }
     const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await sendOtp(target, challenge.code, "réinitialisation du mot de passe");
 
     await supabase
       .from("Session")
@@ -600,8 +800,9 @@ router.post("/forgot-password", async (req, res) => {
       userId: user.id,
       token: `reset_${uuidv4()}`,
       device: "password_reset",
-      otpCode,
+      otpCode: null,
       otpExpiresAt,
+      challengeId: challenge.id,
       isVerified: false,
       createdAt: new Date().toISOString(),
       expiresAt: otpExpiresAt,
@@ -653,22 +854,22 @@ router.post("/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Invalid or expired code" });
     }
 
-    const memoryValid = otpService.verifyOtp(target, code, false);
-
     const { data: session, error: sessionError } = await supabase
       .from("Session")
       .select("*")
       .eq("userId", user.id)
       .eq("device", "password_reset")
-      .eq("otpCode", code)
       .maybeSingle();
 
+    const challengeValid = session?.challengeId
+      ? await verifyOtpChallenge(session.challengeId, code)
+      : false;
     const dbValid =
       !sessionError &&
       !!session &&
       new Date() <= new Date(session.otpExpiresAt);
 
-    if (!memoryValid && !dbValid) {
+    if (!challengeValid || !dbValid) {
       return res.status(400).json({ error: "Invalid or expired code" });
     }
 
@@ -702,11 +903,23 @@ router.post("/reset-password", async (req, res) => {
     const token = jwt.sign(
       { id: fullUser.id, email: fullUser.email },
       ACCESS_SECRET,
-      { expiresIn: "24h" },
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
     );
-    const refreshToken = jwt.sign({ id: fullUser.id }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
+    const refreshToken = jwt.sign(
+      { id: fullUser.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
 
     const { v4: uuidv4 } = await import("uuid");
     await supabase.from("Session").insert({
@@ -755,43 +968,45 @@ router.post("/otp/resend", async (req, res) => {
     if (!requestId)
       return res.status(400).json({ error: "requestId is required" });
 
-    const otpCode = otpService.generateOtp(requestId);
-
+    // requestId peut être un token de session (MFA / password reset) ou une
+    // cible (email/téléphone) issue de /otp/request.
     const { data: session } = await supabase
       .from("Session")
-      .select("id")
+      .select("*, user:User(email, phone)")
       .eq("token", requestId)
       .maybeSingle();
 
     if (session) {
+      const target = session.user?.email || session.user?.phone || "";
+      const purpose =
+        session.device === "password_reset" ? "password_reset" : "login_mfa";
+      const challenge = await createOtpChallenge(target, purpose);
+      if (!challenge) {
+        return res
+          .status(500)
+          .json({ error: "Failed to create OTP challenge" });
+      }
+      await sendOtp(target, challenge.code, "renvoi du code");
       await supabase
         .from("Session")
         .update({
-          otpCode,
+          challengeId: challenge.id,
+          otpCode: null,
           otpExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
         })
         .eq("id", session.id);
-    } else {
-      const { data: user } = await supabase
-        .from("User")
-        .select("id")
-        .or(`email.eq.${requestId},phone.eq.${requestId}`)
-        .maybeSingle();
-
-      if (user) {
-        await supabase
-          .from("Session")
-          .update({
-            otpCode,
-            otpExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-          })
-          .eq("userId", user.id)
-          .eq("device", "password_reset");
-      }
+      return res.json({ success: true, message: "OTP resent successfully" });
     }
 
+    // Cible directe (email/téléphone)
+    const challenge = await createOtpChallenge(requestId, "generic");
+    if (!challenge) {
+      return res.status(500).json({ error: "Failed to create OTP challenge" });
+    }
+    await sendOtp(requestId, challenge.code, "renvoi du code");
     res.json({ success: true, message: "OTP resent successfully" });
   } catch (error) {
+    console.error("OTP resend error:", error);
     res.status(500).json({ error: "Failed to resend OTP" });
   }
 });
@@ -803,13 +1018,26 @@ router.post("/otp/verify", async (req, res) => {
 
     if (!target)
       return res.status(400).json({ error: "Target identifier is required" });
+    if (!code) return res.status(400).json({ error: "Code is required" });
 
-    const isValid = otpService.verifyOtp(target, code, false);
+    // Retrouve le challenge actif le plus récent pour la cible
+    const { data: challenge } = await supabaseService
+      .from("otp_challenge")
+      .select("id")
+      .eq("target", target)
+      .is("consumed_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const challengeId = challenge?.id;
+    const isValid = challengeId
+      ? await verifyOtpChallenge(challengeId, code)
+      : false;
 
     if (!isValid) {
-      console.log(
-        `[SECURITY] OTP Verification FAILED for ${target} (Code: ${code})`,
-      );
+      console.log(`[SECURITY] OTP Verification FAILED for ${target}`);
       return res.status(400).json({
         error: { message: "Invalid or expired code", code: "INVALID_OTP" },
       });
@@ -829,10 +1057,6 @@ router.post("/otp/verify", async (req, res) => {
     console.error("OTP verification error:", error);
     res.status(500).json({ error: "Failed to verify OTP" });
   }
-});
-
-router.get("/test", (req, res) => {
-  res.json({ message: "Auth route works!" });
 });
 
 export default router;
