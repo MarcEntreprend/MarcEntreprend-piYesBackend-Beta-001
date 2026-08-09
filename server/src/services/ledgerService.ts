@@ -81,7 +81,7 @@ export async function getOrCreateCustomerLedgerAccount(
     },
   );
 
-  // ✅ SUPPRIMER { schema: 'public' } – le client Supabase utilise public par défaut
+  //  SUPPRIMER { schema: 'public' } – le client Supabase utilise public par défaut
   const { data, error } = await supabase.rpc(
     "piyes_ledger_get_or_create_customer_account",
     {

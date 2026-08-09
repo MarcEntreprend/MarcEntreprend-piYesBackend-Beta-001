@@ -734,7 +734,7 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
-    // ✅ Utiliser ledgerService au lieu de l'appel direct
+    //  Utiliser ledgerService au lieu de l'appel direct
     const systemCashId = await getSystemCashAccountId();
     const ledgerId = await getOrCreateCustomerLedgerAccount(user.id, {
       name: user.name,

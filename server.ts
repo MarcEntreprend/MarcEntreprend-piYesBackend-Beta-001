@@ -8,7 +8,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { fileURLToPath } from "url";
 
-// ✅ IMPORTS AVEC .ts (pour tsx)
+//  IMPORTS AVEC .ts (pour tsx)
 import authRoutes from "./server/src/routes/auth.ts";
 import userRoutes from "./server/src/routes/user.ts";
 import transactionsRoutes from "./server/src/routes/transactions.ts";
@@ -19,11 +19,11 @@ import servicesRoutes from "./server/src/routes/services.ts";
 import promotionsRoutes from "./server/src/routes/promotions.ts";
 import banksRoutes from "./server/src/routes/banks.ts";
 
-// ✅ PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
+//  PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
 import obpKeysRoutes from "./server/src/routes/obpKeys.ts";
 import obpFacadeRoutes from "./server/src/routes/obpFacade.ts";
 
-// ✅ SÉCURITÉ – middlewares de protection
+//  SÉCURITÉ – middlewares de protection
 import {
   globalLimiter,
   authLimiter,
