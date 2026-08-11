@@ -1,5 +1,5 @@
 <div align="center">
-<img width="800" height="317" alt="GHBanner" src="src/assets/images/logo-piyes-ppl-wh-wh-svg.svg" />
+  <img width="800" height="317" alt="GHBanner" src="src/assets/images/logo-piyes-ppl-wh-wh-svg.svg" />
 </div>
 
 # piYes Wallet Backend
@@ -11,57 +11,62 @@ Supports P2P payments, QR flows, contacts, notifications, and an Open Banking (O
 
 ## Project Structure
 
-```
-
+```text
 piyes-wallet-backend/
 ├── .vercel/
 ├── docs/
-│ └── DEVELOPER_GUIDE.md
+│   └── DEVELOPER_GUIDE.md
 ├── Mes-docs-tests-phase1/
-│ ├── Comment utiliser ces scripts.md
-│ ├── supabase-phase1-tests.sql
-│ └── test-phase1.ps1
+│   ├── Comment utiliser ces scripts.md
+│   ├── supabase-phase1-tests.sql
+│   └── test-phase1.ps1
 ├── Mes-docs-tests-phase3/
-│ ├── DEVELOPER_GUIDE.md
-│ ├── README.md
-│ └── server.ts.patch.txt
+│   ├── DEVELOPER_GUIDE.md
+│   ├── README.md
+│   └── server.ts.patch.txt
 ├── node_modules/
 ├── server/
-│ └── src/
-│ ├── middleware/
-│ │ └── rateLimit.ts
-│ ├── routes/
-│ │ ├── auth.ts
-│ │ ├── banks.ts
-│ │ ├── contacts.ts
-│ │ ├── friendship.ts
-│ │ ├── obpFacade.ts
-│ │ ├── obpKeys.ts
-│ │ ├── promotions.ts
-│ │ ├── scheduler.ts
-│ │ ├── services.ts
-│ │ ├── swagger.ts
-│ │ ├── transactions.ts
-│ │ └── user.ts
-│ ├── services/
-│ │ ├── apiKeyService.ts
-│ │ ├── feeTransaction.ts
-│ │ ├── ledgerService.ts
-│ │ ├── moncashService.ts
-│ │ ├── otpDeliveryService.ts
-│ │ ├── otpService.ts
-│ │ └── pinService.ts
-│ ├── middleware.ts
-│ └── supabase.ts
+│   ├── src/
+│   │   ├── middleware/
+│   │   │   └── rateLimit.ts
+│   │   ├── routes/
+│   │   │   ├── auth.ts
+│   │   │   ├── banks.ts
+│   │   │   ├── contacts.ts
+│   │   │   ├── friendship.ts
+│   │   │   ├── obpFacade.ts
+│   │   │   ├── obpKeys.ts
+│   │   │   ├── promotions.ts
+│   │   │   ├── scheduler.ts
+│   │   │   ├── services.ts
+│   │   │   ├── swagger.ts
+│   │   │   ├── transactions.ts
+│   │   │   └── user.ts
+│   │   ├── services/
+│   │   │   ├── apiKeyService.ts
+│   │   │   ├── feeTransaction.ts
+│   │   │   ├── ledgerService.ts
+│   │   │   ├── moncashService.ts
+│   │   │   ├── otpDeliveryService.ts
+│   │   │   ├── otpService.ts
+│   │   │   └── pinService.ts
+│   │   ├── middleware.ts
+│   │   └── supabase.ts
+│   └── test/
+│       ├── auth.test.ts
+│       ├── helpers.ts
+│       ├── obp.test.ts
+│       ├── security.test.ts
+│       └── transactions.test.ts
 ├── shared/
-│ ├── phoneFormatter.ts
-│ ├── recipientUtils.ts
-│ ├── schemas.ts
-│ └── types.ts
+│   ├── phoneFormatter.ts
+│   ├── recipientUtils.ts
+│   ├── schemas.ts
+│   └── types.ts
 ├── src/
-│ └── assets/
-│ └── images/
-│ └── logo-piyes-ppl-wh-wh-svg.svg
+│   └── assets/
+│       └── images/
+│           └── logo-piyes-ppl-wh-wh-svg.svg
 ├── .env
 ├── .env.example
 ├── .gitignore
@@ -75,7 +80,6 @@ piyes-wallet-backend/
 ├── test-security.ps1
 ├── tsconfig.json
 └── vercel.json
-
 ```
 
 ---
@@ -164,10 +168,13 @@ npm install
 
 1. Run `obp-api-keys.sql` in the Supabase SQL Editor.
 2. Start the development server:
+
    ```bash
    npm run dev
    ```
+
 3. Type-check (must report 0 errors):
+
    ```bash
    npx tsc --noEmit
    ```
@@ -234,70 +241,66 @@ Remove-Item -Recurse -Force node_modules/.vite -ErrorAction SilentlyContinue
 
 ---
 
-### Comment lancer les Tests automatisés:
+## Comment lancer les Tests automatisés
 
-1\. Lancer le serveur (manuel)
+### 1. Lancer le serveur (manuel)
 
-```
+```bash
 npm install          # une fois (dépendances)
 npm run dev          # ou : npm start
-
 ```
 
 Le serveur tourne sur `http://localhost:3000` (port défini dans `server.ts`). Docs interactives Swagger : `http://localhost:3000/api-docs`.
 
 Il faut un `.env` avec `DATABASE_URL` (Supabase) déjà en place. Sans `RESEND_API_KEY`/`TWILIO_*`, les codes OTP sont affichés en console (`[DEV] YOUR OTP IS: ...`).
 
-2\. Lancer les tests automatisés (24/24)
+### 2. Lancer les tests automatisés (24/24)
 
-```
+```bash
 npm test
-
 ```
 
 Chaque fichier démarre un vrai serveur sur son port dédié et joue les flux via HTTP. Résultat attendu :
 
-```
+```text
 # tests 24
 # pass 24
 # fail 0
-
 ```
 
-3\. Voir le détail des tests
+### 3. Voir le détail des tests
 
 Afficher le détail de chaque test (lignes `ok`/`not ok` + noms) :
 
-```
-  npm test 2>&1 | grep -E "^(ok|not ok)"
-
+```bash
+npm test 2>&1 | grep -E "^(ok|not ok)"
 ```
 
 Un seul fichier, pour voir un flux précis (ex. les transferts) :
 
+```bash
+npx tsx --test server/test/transactions.test.ts
 ```
-  npx tsx --test server/test/transactions.test.ts
 
-```
+**Tests par domaine :**
 
-Tests par domaine :
-
-- `auth.test.ts` --- inscription, connexion, MFA/OTP, refresh (rotation + rejeu), logout-all
-- `security.test.ts` --- headers de sécurité, route debug supprimée, rate limit (429), OTP à usage unique
-- `obp.test.ts` --- clés API, endpoints publics Open Banking, révocation
-- `transactions.test.ts` --- transfert, idempotence, solde insuffisant, mauvais PIN, historique
+- `auth.test.ts` — inscription, connexion, MFA/OTP, refresh (rotation + rejeu), logout-all
+- `security.test.ts` — headers de sécurité, route debug supprimée, rate limit (429), OTP à usage unique
+- `obp.test.ts` — clés API, endpoints publics Open Banking, révocation
+- `transactions.test.ts` — transfert, idempotence, solde insuffisant, mauvais PIN, historique
 
 Détail verbeux (noms + durée) :
 
-```
+```bash
 npx tsx --test --test-reporter spec server/test/*.test.ts
-
 ```
 
-## Prérequis / notes
+### Prérequis / notes
 
 - Il faut la base Supabase accessible (`DATABASE_URL`), sinon les tests échouent.
-- Les tests utilisent l'OTP console (pas de Resend/Twilio) et polluent la base (`*.@piyes.app`, `payment_order`) --- un cleanup SQL est possible entre deux runs si besoin.
+- Les tests utilisent l'OTP console (pas de Resend/Twilio) et polluent la base (`*.@piyes.app`, `payment_order`) — un cleanup SQL est possible entre deux runs si besoin.
+
+---
 
 ## Deployment (Vercel)
 
@@ -311,7 +314,7 @@ vercel --prod
 
 After a successful production deploy you should see:
 
-```
+```text
 Production: https://piyesbackend001-xxxxx.vercel.app
 ```
 
