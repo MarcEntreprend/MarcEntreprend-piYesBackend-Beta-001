@@ -5,6 +5,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { supabaseService } from "../src/supabase.js";
 import { startServer, makeClient, signup } from "./helpers.js";
 import type { TestServer } from "./helpers.js";
 
@@ -14,12 +15,21 @@ let client: ReturnType<typeof makeClient>;
 let token: string;
 let apiKey: string;
 let keyId: string;
+let accountId: string;
 
 before(async () => {
   srv = await startServer({ port: PORT });
   client = makeClient(srv.baseUrl);
   const res = await signup(client);
   token = res.token;
+
+  const { data: account } = await supabaseService
+    .from("Account")
+    .select("id")
+    .eq("provider", "piyes")
+    .limit(1)
+    .maybeSingle();
+  accountId = account?.id || "piyes-main";
 });
 
 after(async () => {
@@ -65,6 +75,16 @@ test("OBP /accounts/public : avec clé → 200", async () => {
   const r = await client.req("GET", "/obp/v3.1.0/accounts/public", { apiKey });
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.json.accounts));
+});
+
+test("OBP proxy : transactions d'un compte (view public) → 200", async () => {
+  const r = await client.req(
+    "GET",
+    `/obp/v3.1.0/banks/piyes/accounts/${accountId}/public/transactions`,
+    { apiKey },
+  );
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.json.transactions));
 });
 
 test("OBP : révoquer la clé → 200 puis /banks → 401", async () => {

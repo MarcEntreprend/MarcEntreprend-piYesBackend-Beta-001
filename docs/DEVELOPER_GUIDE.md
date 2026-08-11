@@ -299,9 +299,22 @@ npm test
   (rotation + rejeu → purge), logout-all.
 - `security.test.ts` (5) — headers helmet, route debug supprimée, rate
   limit (429), OTP mono-usage.
-- `obp.test.ts` (7) — clés API, endpoints publics OBP, révocation.
+- `obp.test.ts` (8) — clés API, endpoints publics OBP, proxy transactions
+  d'un compte, révocation.
 - `transactions.test.ts` (5) — transfert, idempotence, solde insuffisant,
   mauvais PIN, historique.
+- `funds.test.ts` (4) — recharge opérateur (ledger), solde insuffisant,
+  dépôt, retrait.
+- `contacts.test.ts` (7) — sync de contacts (résolution par tag), liste,
+  demande d'ami, acceptation, statut, annulation.
+- `scheduler.test.ts` (5) — création d'une demande, liste, confirmation
+  via qrToken, re-confirmation refusée, suppression.
+- `password.test.ts` (5) — forgot-password (compte inconnu + existant),
+  reset-password (mauvais code + code valide), login MFA après reset.
+- `qr.test.ts` (5) — generate-qr (identité + paiement), scan-qr, rejeu
+  idempotent, solde insuffisant.
+
+Total : **51 tests** (24 historiques + 27 ajoutés).
 
 Note : les tests utilisent l'OTP **console** (pas de Resend/Twilio
 configurés) et seedent le ledger directement via service role pour les

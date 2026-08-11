@@ -1065,7 +1065,7 @@ router.post("/generate-qr", authMiddleware, async (req: AuthRequest, res) => {
           error: { message: "Amount invalide", code: "INVALID_AMOUNT" },
         });
       }
-      qrPayload.amount = Math.round(amountNum * 100); // centimes HTG
+      qrPayload.amount = amountNum; // HTG
       if (description) qrPayload.description = description;
       const ttlMin = expiresInMinutes ? Number(expiresInMinutes) : 5;
       qrPayload.expiry = Date.now() + ttlMin * 60 * 1000;
