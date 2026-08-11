@@ -80,7 +80,9 @@ piyes-wallet-backend/
 
 ---
 
-## Phases 2 & 4 Integration
+## Phases
+
+### Phases 2 & 4 Integration
 
 > **Branch**: `phase-1` → `phase-1to5`
 > Phases 0, 1, 3, and 5 were already complete.
@@ -88,7 +90,7 @@ piyes-wallet-backend/
 
 **Swagger UI**: [http://localhost:3000/api-docs](http://localhost:3000/api-docs)
 
-### Phase 2 — P2P (QR, Advanced Contacts, Notifications)
+#### Phase 2 — P2P (QR, Advanced Contacts, Notifications)
 
 | Endpoint                                   | Method | Description                                                              |
 | ------------------------------------------ | ------ | ------------------------------------------------------------------------ |
@@ -98,7 +100,7 @@ piyes-wallet-backend/
 | `/api/v1/user/notifications/mark-all-read` | POST   | Mark all notifications as read                                           |
 | `/api/v1/user/notifications/unread-count`  | GET    | Unread notification count                                                |
 
-### Phase 4 — Public Open Banking API (OBP v3.1.0)
+#### Phase 4 — Public Open Banking API (OBP v3.1.0)
 
 - **Third-party API keys**: table `piyes_api_key` (see `obp-api-keys.sql`).
   Only the SHA-256 hash of the key is stored.
@@ -115,7 +117,7 @@ piyes-wallet-backend/
   - **Proxy** → real OBP instance (when `OBP_BASE_URL` is set, uses DirectLogin)
   - **Mock** → read-only against Supabase (local development)
 
-### Files Added / Modified
+#### Files Added / Modified
 
 | File                                   | Change                                                      |
 | -------------------------------------- | ----------------------------------------------------------- |
@@ -129,6 +131,22 @@ piyes-wallet-backend/
 | `server.ts`                            | Mounts `/obp`                                               |
 | `openapi.yaml`                         | P2P + OBP endpoints documented                              |
 | `docs/DEVELOPER_GUIDE.md`              | Sections 6 & 8 updated                                      |
+
+---
+
+### Phase post-5-automatic-tests
+
+**Où on en est après ce chantier :**
+
+| Axe                                                      | Avant | Après | Commentaire                                                                                                           |
+| -------------------------------------------------------- | ----- | ----- | --------------------------------------------------------------------------------------------------------------------- |
+| Couverture fonctionnelle                                 | 100 % | 100 % | inchangé                                                                                                              |
+| Fidélité à la spec OpenAPI                               | 100 % | 100 % | + `/auth/refresh`, code 429 documentés                                                                                |
+| Sécurité (rate limit, helmet, sessions, OTP)             | ~35 % | 100 % | implémenté + testé runtime ET automatisé                                                                              |
+| Intégrations réelles (banques, MonCash, intl, OBP proxy) | ~50 % | ~50 % | inchangé (mocks assumés)                                                                                              |
+| Tests automatisés                                        | 0 %   | ~40 % | suite node:test + tsx, 24/24 verts — flux critiques : auth, MFA, refresh, rate limit, OTP, OBP, transfer, idempotence |
+| Docs / guide développeur                                 | 90 %  | 95 %  | § Sécurité ajouté                                                                                                     |
+| Verdict global                                           | ~70 % | ~88 % |                                                                                                                       |
 
 ---
 
@@ -215,6 +233,71 @@ Remove-Item -Recurse -Force node_modules/.vite -ErrorAction SilentlyContinue
 ```
 
 ---
+
+### Comment lancer les Tests automatisés:
+
+1\. Lancer le serveur (manuel)
+
+```
+npm install          # une fois (dépendances)
+npm run dev          # ou : npm start
+
+```
+
+Le serveur tourne sur `http://localhost:3000` (port défini dans `server.ts`). Docs interactives Swagger : `http://localhost:3000/api-docs`.
+
+Il faut un `.env` avec `DATABASE_URL` (Supabase) déjà en place. Sans `RESEND_API_KEY`/`TWILIO_*`, les codes OTP sont affichés en console (`[DEV] YOUR OTP IS: ...`).
+
+2\. Lancer les tests automatisés (24/24)
+
+```
+npm test
+
+```
+
+Chaque fichier démarre un vrai serveur sur son port dédié et joue les flux via HTTP. Résultat attendu :
+
+```
+# tests 24
+# pass 24
+# fail 0
+
+```
+
+3\. Voir le détail des tests
+
+Afficher le détail de chaque test (lignes `ok`/`not ok` + noms) :
+
+```
+  npm test 2>&1 | grep -E "^(ok|not ok)"
+
+```
+
+Un seul fichier, pour voir un flux précis (ex. les transferts) :
+
+```
+  npx tsx --test server/test/transactions.test.ts
+
+```
+
+Tests par domaine :
+
+- `auth.test.ts` --- inscription, connexion, MFA/OTP, refresh (rotation + rejeu), logout-all
+- `security.test.ts` --- headers de sécurité, route debug supprimée, rate limit (429), OTP à usage unique
+- `obp.test.ts` --- clés API, endpoints publics Open Banking, révocation
+- `transactions.test.ts` --- transfert, idempotence, solde insuffisant, mauvais PIN, historique
+
+Détail verbeux (noms + durée) :
+
+```
+npx tsx --test --test-reporter spec server/test/*.test.ts
+
+```
+
+## Prérequis / notes
+
+- Il faut la base Supabase accessible (`DATABASE_URL`), sinon les tests échouent.
+- Les tests utilisent l'OTP console (pas de Resend/Twilio) et polluent la base (`*.@piyes.app`, `payment_order`) --- un cleanup SQL est possible entre deux runs si besoin.
 
 ## Deployment (Vercel)
 

@@ -281,3 +281,29 @@ curl http://192.168.15.2:3000/obp/v3.1.0/banks -H "X-API-Key: piyes_..."
   `piyes_api_key` ne permet pas de réutiliser les clés.
 - Le SMS OTP (Twilio) ne peut être livré qu'à des numéros réels ; sans
   `TWILIO_*`, les codes sont affichés en console (dév).
+
+## 12. Tests automatisés
+
+Suite d'intégration basée sur `node:test` + `tsx` (zéro dépendance
+supplémentaire) : chaque fichier démarre un **vrai serveur** en
+sous-processus (port dédié) et joue les flux via HTTP contre la vraie base.
+
+```bash
+npm test
+```
+
+- `server/test/helpers.ts` — `startServer({ port })` (attend `[READY]`,
+  capture les codes OTP de la console), `makeClient()` (cookie jar pour le
+  refresh token), `signup()`, `uniqueEmail()`/`uniquePhone()`, `stop()`.
+- `auth.test.ts` (7) — signup, login, MFA 2e device + OTP, refresh
+  (rotation + rejeu → purge), logout-all.
+- `security.test.ts` (5) — headers helmet, route debug supprimée, rate
+  limit (429), OTP mono-usage.
+- `obp.test.ts` (7) — clés API, endpoints publics OBP, révocation.
+- `transactions.test.ts` (5) — transfert, idempotence, solde insuffisant,
+  mauvais PIN, historique.
+
+Note : les tests utilisent l'OTP **console** (pas de Resend/Twilio
+configurés) et seedent le ledger directement via service role pour les
+transferts. Chaque run pollue la base (`*.@piyes.app` + `payment_order`) ;
+un cleanup SQL peut être exécuté entre deux runs.
