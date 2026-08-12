@@ -81,7 +81,7 @@ export async function getOrCreateCustomerLedgerAccount(
     },
   );
 
-  //  SUPPRIMER { schema: 'public' } – le client Supabase utilise public par défaut
+  // ✅ SUPPRIMER { schema: 'public' } – le client Supabase utilise public par défaut
   const { data, error } = await supabase.rpc(
     "piyes_ledger_get_or_create_customer_account",
     {
@@ -171,7 +171,17 @@ export async function postOrder(
     throw error;
   }
   console.log("[LEDGER] postOrder result:", data);
-  return data as PostOrderResult;
+  // Normalise les clés snake_case renvoyées par la RPC (payment_order_id,
+  // debit_balance, credit_balance, journal_entry_id) vers le camelCase.
+  const raw: any = data ?? {};
+  return {
+    paymentOrderId: raw.payment_order_id ?? raw.paymentOrderId,
+    journalEntryId: raw.journal_entry_id ?? raw.journalEntryId,
+    status: raw.status,
+    replay: raw.replay,
+    debitBalance: raw.debit_balance ?? raw.debitBalance,
+    creditBalance: raw.credit_balance ?? raw.creditBalance,
+  } as PostOrderResult;
 }
 
 export function ledgerErrorResponse(err: any): {

@@ -269,6 +269,16 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         .eq("role", TransactionRole.PAYER)
         .maybeSingle();
       if (existingTx) {
+        const { data: senderLedgerBalance } = await supabase
+          .from("ledger_account_balance")
+          .select("balance_cents")
+          .eq("ledger_account_id", senderLedgerId)
+          .single();
+        const { data: receiverLedgerBalance } = await supabase
+          .from("ledger_account_balance")
+          .select("balance_cents")
+          .eq("ledger_account_id", receiverLedgerId)
+          .single();
         const nameParts = receiver.name.trim().split(/\s+/);
         const recipientInitials =
           nameParts.length > 1
@@ -282,6 +292,8 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
           recipientName: receiver.name,
           recipientAvatarUrl: receiver.avatarUrl,
           recipientInitials,
+          senderBalance: (senderLedgerBalance?.balance_cents ?? 0) / 100,
+          receiverBalance: (receiverLedgerBalance?.balance_cents ?? 0) / 100,
         });
       }
     }
@@ -734,7 +746,7 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
-    //  Utiliser ledgerService au lieu de l'appel direct
+    // ✅ Utiliser ledgerService au lieu de l'appel direct
     const systemCashId = await getSystemCashAccountId();
     const ledgerId = await getOrCreateCustomerLedgerAccount(user.id, {
       name: user.name,
@@ -1065,7 +1077,7 @@ router.post("/generate-qr", authMiddleware, async (req: AuthRequest, res) => {
           error: { message: "Amount invalide", code: "INVALID_AMOUNT" },
         });
       }
-      qrPayload.amount = amountNum; // HTG
+      qrPayload.amount = amountNum; // HTG (décimal) — scan-qr convertit en centimes
       if (description) qrPayload.description = description;
       const ttlMin = expiresInMinutes ? Number(expiresInMinutes) : 5;
       qrPayload.expiry = Date.now() + ttlMin * 60 * 1000;
