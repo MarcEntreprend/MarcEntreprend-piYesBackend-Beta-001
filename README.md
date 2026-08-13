@@ -142,15 +142,15 @@ piyes-wallet-backend/
 
 **Où on en est après ce chantier :**
 
-| Axe                                                      | Avant | Après | Commentaire                                                                                                           |
-| -------------------------------------------------------- | ----- | ----- | --------------------------------------------------------------------------------------------------------------------- |
-| Couverture fonctionnelle                                 | 100 % | 100 % | inchangé                                                                                                              |
-| Fidélité à la spec OpenAPI                               | 100 % | 100 % | + `/auth/refresh`, code 429 documentés                                                                                |
-| Sécurité (rate limit, helmet, sessions, OTP)             | ~35 % | 100 % | implémenté + testé runtime ET automatisé                                                                              |
-| Intégrations réelles (banques, MonCash, intl, OBP proxy) | ~50 % | ~50 % | inchangé (mocks assumés)                                                                                              |
-| Tests automatisés                                        | 0 %   | ~40 % | suite node:test + tsx, 24/24 verts — flux critiques : auth, MFA, refresh, rate limit, OTP, OBP, transfer, idempotence |
-| Docs / guide développeur                                 | 90 %  | 95 %  | § Sécurité ajouté                                                                                                     |
-| Verdict global                                           | ~70 % | ~88 % |                                                                                                                       |
+| Axe                                                      | Avant | Après | Commentaire                                                                                                                                                             |
+| -------------------------------------------------------- | ----- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Couverture fonctionnelle                                 | 100 % | 100 % | inchangé                                                                                                                                                                |
+| Fidélité à la spec OpenAPI                               | 100 % | 100 % | + `/auth/refresh`, code 429 documentés                                                                                                                                  |
+| Sécurité (rate limit, helmet, sessions, OTP)             | ~35 % | 100 % | implémenté + testé runtime ET automatisé                                                                                                                                |
+| Intégrations réelles (banques, MonCash, intl, OBP proxy) | ~50 % | ~50 % | inchangé (mocks assumés)                                                                                                                                                |
+| Tests automatisés                                        | 0 %   | ~80 % | suite node:test + tsx, 51/51 verts --- auth, MFA, refresh, rate limit, OTP, OBP+proxy, transfer, idempotence, recharge/dépôt/retrait, contacts, scheduler, password, QR |
+| Docs / guide développeur                                 | 90 %  | 95 %  | § Sécurité + § 12 Tests (51 tests) ajoutés                                                                                                                              |
+| Verdict global                                           | ~70 % | ~92 % |                                                                                                                                                                         |
 
 ---
 
