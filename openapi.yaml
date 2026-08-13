@@ -636,10 +636,75 @@ paths:
     post:
       tags: [Transactions]
       summary: Confirmation de paiement MonCash (anti-rejeu)
+      description: >
+        Confirme un dépôt MonCash. Accepte `transactionId` (transaction MonCash)
+        ou `orderId` (fallback RetrieveOrderPayment). Débite le compte préfondé
+        MonCash (1002) et crédite le compte ledger du client.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transactionId: { type: string }
+                orderId: { type: string }
+              minProperties: 1
+      responses:
+        "200":
+          description: Dépôt confirmé et transaction COMPLETED enregistrée
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "400":
+          description: Missing transactionId/orderId ou paiement non réussi
+  /transactions/moncash/order-payment:
+    post:
+      tags: [Transactions]
+      summary: Récupérer un paiement MonCash par orderId
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderId: { type: string }
+              required: [orderId]
+      responses:
+        "200":
+          description: Détails du paiement
+  /transactions/moncash/transfer-status:
+    post:
+      tags: [Transactions]
+      summary: Statut d'un transfert MonCash (payout) par référence
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reference: { type: string }
+              required: [reference]
+      responses:
+        "200":
+          description: Statut du transfert
+  /transactions/moncash/prefunded-balance:
+    get:
+      tags: [Transactions]
+      summary: Solde du compte préfondé MonCash (admin)
+      description: Requiert l'en-tête `x-admin-secret` égal à `MONCASH_ADMIN_SECRET`.
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Paiement confirmé
+          description: Solde préfondé
+        "403":
+          description: Secret admin invalide ou non configuré
   /transactions/international:
     post:
       tags: [Transactions]
@@ -1292,6 +1357,16 @@ components:
         userId: { type: string }
         accountId: { type: string }
         external_id: { type: string }
+        auth_code: { type: string }
+        moncashTransactionId: { type: string }
+        moncashReference: { type: string }
+        payment_order_id: { type: string }
+        status:
+          {
+            type: string,
+            enum: [PENDING, COMPLETED, FAILED],
+            description: "Statut de la transaction (MonCash)",
+          }
 
     Receipt:
       type: object
@@ -1303,6 +1378,8 @@ components:
         date: { type: string, format: date-time }
         role: { type: string }
         counterpartyName: { type: string }
+        moncashTransactionId: { type: string }
+        moncashReference: { type: string }
 
     UpdateProfileRequest:
       type: object

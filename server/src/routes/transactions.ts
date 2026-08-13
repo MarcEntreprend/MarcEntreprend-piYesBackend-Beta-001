@@ -21,6 +21,7 @@ import {
 import { verifyPin } from "../services/pinService.js";
 import {
   getIdempotencyKey,
+  getMonCashPrefundedAccountId,
   getOrCreateCustomerLedgerAccount,
   getSystemCashAccountId,
   ledgerErrorResponse,
@@ -717,25 +718,33 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
           const { moncashService } =
             await import("../services/moncashService.js");
           const orderId = generateId();
-          const redirectUrl = await moncashService.createPayment(
+          const payment = await moncashService.createPayment(
             validated.amount,
             orderId,
           );
-          await supabase.from("Transaction").insert({
-            id: orderId,
-            type: TransactionType.DEPOSIT,
-            amount: amountCents,
-            description: "Dépôt MonCash (En attente)",
-            role: TransactionRole.RECEIVER,
-            counterpartyName: "MonCash",
-            userId: userId,
-            accountId: accountId,
-            status: "PENDING",
-            date: new Date().toISOString(),
-            balance_before: user.balance,
-            balance_after: user.balance,
+          const { error: pendingError } = await supabase
+            .from("Transaction")
+            .insert({
+              id: orderId,
+              type: TransactionType.DEPOSIT,
+              amount: amountCents,
+              description: "Dépôt MonCash (En attente)",
+              role: TransactionRole.RECEIVER,
+              counterpartyName: "MonCash",
+              userId: userId,
+              accountId: accountId,
+              status: "PENDING",
+              date: new Date().toISOString(),
+              balance_before: user.balance,
+              balance_after: user.balance,
+            });
+          if (pendingError) throw pendingError;
+          return res.json({
+            redirectUrl: payment.redirectUrl,
+            paymentToken: payment.token,
+            mode: payment.mode,
+            orderId,
           });
-          return res.json({ redirectUrl, orderId });
         } catch (error: any) {
           return res.status(400).json({
             error: {
@@ -864,6 +873,139 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       .maybeSingle();
     const accountId = userAccount?.id || "piyes-main";
 
+    // === MonCash payout : la cible est un compte MonCash lié ===
+    const { data: targetAccount } = await supabase
+      .from("Account")
+      .select("*")
+      .eq("id", validated.accountId)
+      .eq("userId", userId)
+      .maybeSingle();
+
+    if (targetAccount?.provider === "moncash") {
+      const { moncashService } = await import("../services/moncashService.js");
+      const reference = getIdempotencyKey(req);
+
+      // 1. PIN obligatoire pour un retrait sortant
+      if (!validated.pin) throw new Error("PIN requis");
+      await verifyPin(user.pinHash, validated.pin);
+
+      // 2. Éligibilité KYC du bénéficiaire MonCash
+      const accountNumber = targetAccount.accountNumber;
+      if (!accountNumber) throw new Error("Compte MonCash sans numéro");
+      const customerStatus =
+        await moncashService.getCustomerStatus(accountNumber);
+      const eligible =
+        customerStatus.type === "fullkyc" &&
+        Array.isArray(customerStatus.status) &&
+        customerStatus.status.includes("active");
+      if (!eligible) {
+        return res.status(400).json({
+          error: {
+            message: "Le compte MonCash bénéficiaire n'est pas éligible",
+            code: "MONCASH_CUSTOMER_INELIGIBLE",
+            customerStatus,
+          },
+        });
+      }
+
+      // 3. Solde préfondé MonCash suffisant
+      const prefunded = await moncashService.getPrefundedBalance();
+      if (prefunded.balance * 100 < amountCents) {
+        return res.status(400).json({
+          error: {
+            message: "Fonds préfondés MonCash insuffisants",
+            code: "MONCASH_PREFUNDED_INSUFFICIENT",
+          },
+        });
+      }
+
+      // 4. Payout MonCash (Transfert)
+      const transfer = await moncashService.transfer(
+        validated.amount,
+        accountNumber,
+        reference,
+      );
+
+      // 5. Ledger : retrait = débit client / crédit préfondé MonCash (1002)
+      const prefundedLedgerId = await getMonCashPrefundedAccountId();
+      const ledgerId = await resolveLedgerForUser(user, accountId);
+      const ledgerResult = await postOrder({
+        idempotencyKey: `moncash-payout:${reference}`,
+        type: "WITHDRAW",
+        customerUserId: userId,
+        amountCents,
+        debitAccountId: ledgerId,
+        creditAccountId: prefundedLedgerId,
+        description: "Retrait vers MonCash",
+        externalRef: reference,
+      });
+
+      if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+        return res.status(400).json({
+          error: {
+            message: "Transaction refusée : ordre précédent non réglé",
+            code: "INSUFFICIENT_BALANCE",
+          },
+        });
+      }
+
+      if (ledgerResult.replay) {
+        const { data: existing } = await supabase
+          .from("Transaction")
+          .select("*")
+          .eq("payment_order_id", ledgerResult.paymentOrderId)
+          .eq("role", TransactionRole.PAYER)
+          .maybeSingle();
+        if (existing) return res.json(existing);
+      }
+
+      const balanceAfter = ledgerResult.debitBalance!;
+      const balanceBefore = balanceAfter + amountCents;
+      const txCode = generateTxCode();
+      const authCode = generateAuthCode();
+
+      const { data: transaction, error: txError } = await supabase
+        .from("Transaction")
+        .insert({
+          id: generateId(),
+          type: TransactionType.WITHDRAW,
+          amount: amountCents,
+          description: "Retrait vers MonCash",
+          role: TransactionRole.PAYER,
+          counterpartyName: "MonCash",
+          userId: userId,
+          accountId: accountId,
+          external_id: txCode,
+          auth_code: authCode,
+          payment_order_id: ledgerResult.paymentOrderId,
+          moncashTransactionId: transfer.transaction_id,
+          moncashReference: reference,
+          date: new Date().toISOString(),
+          balance_before: balanceBefore,
+          balance_after: balanceAfter,
+        })
+        .select()
+        .single();
+      if (txError) throw txError;
+
+      await supabase.from("Notification").insert({
+        id: generateId(),
+        userId: userId,
+        type: "withdraw_success",
+        title: "withdraw_success",
+        body: "withdraw_success.body",
+        amount: validated.amount.toString(),
+        data: { name: "MonCash", amount: validated.amount },
+        isRead: false,
+        targetId: transaction.id,
+        route: "/history",
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json(transaction);
+    }
+
+    // === Retrait interne piYès (inchangé) ===
     // === LEDGER : retrait = débit client / crédit caisse piYès ===
     const systemCashId = await getSystemCashAccountId();
     const ledgerId = await resolveLedgerForUser(user, accountId);
@@ -1683,7 +1825,7 @@ router.post(
   },
 );
 
-// 11. MONCASH CONFIRMATION (unchanged)
+// 11. MONCASH CONFIRMATION
 router.post(
   "/moncash/confirm",
   authMiddleware,
@@ -1692,28 +1834,36 @@ router.post(
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
       const { transactionId, orderId } = req.body;
-      if (!transactionId)
-        return res.status(400).json({ error: "Missing transactionId" });
+      if (!transactionId && !orderId)
+        return res
+          .status(400)
+          .json({ error: "Missing transactionId or orderId" });
       const { moncashService } = await import("../services/moncashService.js");
-      const result =
-        await moncashService.retrieveTransactionPayment(transactionId);
+
+      const result = transactionId
+        ? await moncashService.retrieveTransactionPayment(transactionId)
+        : await moncashService.retrieveOrderPayment(orderId);
       if (result.payment.message === "successful") {
-        const { data: alreadyRecorded } = await supabase
+        const alreadyRecorded = await supabase
           .from("Transaction")
           .select("*")
-          .eq("moncashTransactionId", transactionId)
+          .or(
+            transactionId
+              ? `moncashTransactionId.eq.${transactionId}`
+              : `external_id.eq.${result.payment.reference}`,
+          )
           .maybeSingle();
-        if (alreadyRecorded) return res.json(alreadyRecorded);
+        if (alreadyRecorded.data) return res.json(alreadyRecorded.data);
 
         const amountCents = Math.round(result.payment.cost * 100);
         const { data: user } = await supabase
           .from("User")
-          .select("balance")
+          .select("id, name, balance")
           .eq("id", userId)
           .single();
         if (!user) throw new Error("User not found");
 
-        // === LEDGER : dépôt MonCash = crédit client / débit caisse piYès ===
+        // === LEDGER : dépôt MonCash = crédit client / débit préfondé MonCash (1002) ===
         const { data: userAccount } = await supabase
           .from("Account")
           .select("id")
@@ -1721,17 +1871,17 @@ router.post(
           .eq("provider", "piyes")
           .maybeSingle();
         const accountId = userAccount?.id || "piyes-main";
-        const systemCashId = await getSystemCashAccountId();
+        const prefundedLedgerId = await getMonCashPrefundedAccountId();
         const ledgerId = await resolveLedgerForUser(user, accountId);
         const ledgerResult = await postOrder({
-          idempotencyKey: `moncash:${transactionId}`,
+          idempotencyKey: `moncash:${transactionId || orderId}`,
           type: "DEPOSIT",
           customerUserId: userId,
           amountCents,
-          debitAccountId: systemCashId,
+          debitAccountId: prefundedLedgerId,
           creditAccountId: ledgerId,
           description: "Dépôt MonCash",
-          externalRef: `moncash:${transactionId}`,
+          externalRef: `moncash:${transactionId || orderId}`,
         });
 
         const balanceAfter = ledgerResult.creditBalance!;
@@ -1760,7 +1910,8 @@ router.post(
             accountId: accountId,
             external_id: txCode,
             auth_code: authCode,
-            moncashTransactionId: transactionId,
+            moncashTransactionId: transactionId || undefined,
+            moncashReference: result.payment.reference || undefined,
             payment_order_id: ledgerResult.paymentOrderId,
             status: "COMPLETED",
             date: new Date().toISOString(),
@@ -1780,6 +1931,75 @@ router.post(
       console.error("MonCash confirmation error:", error);
       const mapped = ledgerErrorResponse(error);
       res.status(mapped.status).json(mapped.body);
+    }
+  },
+);
+
+// 11bis. MONCASH RETRIEVE BY ORDER ID
+router.post(
+  "/moncash/order-payment",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      const { orderId } = req.body;
+      if (!orderId) return res.status(400).json({ error: "Missing orderId" });
+      const { moncashService } = await import("../services/moncashService.js");
+      const result = await moncashService.retrieveOrderPayment(orderId);
+      return res.json(result);
+    } catch (error: any) {
+      console.error("MonCash order-payment error:", error);
+      res
+        .status(error?.status || 400)
+        .json({ error: { message: error?.message || "MonCash error" } });
+    }
+  },
+);
+
+// 11ter. MONCASH TRANSFER STATUS (payout)
+router.post(
+  "/moncash/transfer-status",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      const { reference } = req.body;
+      if (!reference)
+        return res.status(400).json({ error: "Missing reference" });
+      const { moncashService } = await import("../services/moncashService.js");
+      const status = await moncashService.prefundedTransactionStatus(reference);
+      return res.json(status);
+    } catch (error: any) {
+      console.error("MonCash transfer-status error:", error);
+      res
+        .status(error?.status || 400)
+        .json({ error: { message: error?.message || "MonCash error" } });
+    }
+  },
+);
+
+// 11quater. MONCASH PREFUNDED BALANCE (admin)
+router.get(
+  "/moncash/prefunded-balance",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const adminSecret = process.env.MONCASH_ADMIN_SECRET;
+      if (!adminSecret || req.headers["x-admin-secret"] !== adminSecret) {
+        return res
+          .status(403)
+          .json({ error: { message: "Forbidden", code: "FORBIDDEN" } });
+      }
+      const { moncashService } = await import("../services/moncashService.js");
+      const balance = await moncashService.getPrefundedBalance();
+      return res.json(balance);
+    } catch (error: any) {
+      console.error("MonCash prefunded-balance error:", error);
+      res
+        .status(error?.status || 400)
+        .json({ error: { message: error?.message || "MonCash error" } });
     }
   },
 );

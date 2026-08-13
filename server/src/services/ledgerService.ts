@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { supabase } from "../supabase.js";
 
 const SYSTEM_CASH_CODE = "1001";
+const MONCASH_PREFUNDED_CODE = "1002";
 
 export function getIdempotencyKey(req: {
   headers: Record<string, unknown>;
@@ -57,6 +58,36 @@ export async function getSystemCashAccountId(): Promise<string> {
     return inserted.id as string;
   })();
   return systemCashPromise;
+}
+
+let moncashPrefundedPromise: Promise<string> | null = null;
+
+export async function getMonCashPrefundedAccountId(): Promise<string> {
+  if (moncashPrefundedPromise) return moncashPrefundedPromise;
+  moncashPrefundedPromise = (async () => {
+    const { data } = await supabase
+      .from("ledger_account")
+      .select("id")
+      .eq("code", MONCASH_PREFUNDED_CODE)
+      .maybeSingle();
+    if (data) return data.id as string;
+
+    const { data: inserted, error } = await supabase
+      .from("ledger_account")
+      .insert({
+        code: MONCASH_PREFUNDED_CODE,
+        name: "Compte préfondé MonCash HTG",
+        type: "ASSET",
+        is_system: true,
+        allow_overdraft: true,
+      })
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!inserted) throw new Error("Ledger non initialisé");
+    return inserted.id as string;
+  })();
+  return moncashPrefundedPromise;
 }
 
 export interface CustomerLedgerOptions {
