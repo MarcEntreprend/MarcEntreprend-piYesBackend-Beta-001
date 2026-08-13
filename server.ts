@@ -89,6 +89,10 @@ async function initializeApp() {
   app.use(express.urlencoded({ limit: "10mb", extended: true }));
   app.use(cookieParser());
 
+  // Servir les fichiers statiques (favicon, images, etc.)
+  app.use(express.static(path.join(__dirname, "public")));
+  console.log(">>> [STARTUP] Static files mounted from /public");
+
   // CORS
   const allowedOrigins: (string | RegExp)[] = [
     "http://localhost:5173",

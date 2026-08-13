@@ -299,6 +299,7 @@ export interface Transaction {
   external_id?: string;
   status?: "PENDING" | "COMPLETED" | "FAILED";
   moncashTransactionId?: string;
+  moncashReference?: string;
   balance_before?: number; // Solde AVANT la transaction (en gourdes)
   balance_after?: number; // Solde APRÈS la transaction (en gourdes)
 }

@@ -12,24 +12,30 @@ Supports P2P payments, QR flows, contacts, notifications, and an Open Banking (O
 ## Project Structure
 
 ```text
-piyes-wallet-backend/
-├── .vercel/
-├── docs/
-│   └── DEVELOPER_GUIDE.md
-├── Mes-docs-tests-phase1/
-│   ├── Comment utiliser ces scripts.md
-│   ├── supabase-phase1-tests.sql
-│   └── test-phase1.ps1
-├── Mes-docs-tests-phase3/
+.
+├── .vercel
+├── docs
 │   ├── DEVELOPER_GUIDE.md
-│   ├── README.md
-│   └── server.ts.patch.txt
-├── node_modules/
-├── server/
-│   ├── src/
-│   │   ├── middleware/
+│   └── MONCASH_INTEGRATION.md
+├── node_modules
+├── public
+│   ├── android-chrome-192x192.png
+│   ├── android-chrome-512x512.png
+│   ├── apple-touch-icon.png
+│   ├── favicon-16x16.png
+│   ├── favicon-32x32.png
+│   ├── favicon.ico
+│   └── site.webmanifest
+├── scripts
+│   └── moncash
+│       ├── helpers.ps1
+│       ├── test-endpoints.ps1
+│       └── test-flow.ps1
+├── server
+│   ├── src
+│   │   ├── middleware
 │   │   │   └── rateLimit.ts
-│   │   ├── routes/
+│   │   ├── routes
 │   │   │   ├── auth.ts
 │   │   │   ├── banks.ts
 │   │   │   ├── contacts.ts
@@ -42,7 +48,7 @@ piyes-wallet-backend/
 │   │   │   ├── swagger.ts
 │   │   │   ├── transactions.ts
 │   │   │   └── user.ts
-│   │   ├── services/
+│   │   ├── services
 │   │   │   ├── apiKeyService.ts
 │   │   │   ├── feeTransaction.ts
 │   │   │   ├── ledgerService.ts
@@ -52,20 +58,26 @@ piyes-wallet-backend/
 │   │   │   └── pinService.ts
 │   │   ├── middleware.ts
 │   │   └── supabase.ts
-│   └── test/
+│   └── test
 │       ├── auth.test.ts
+│       ├── contacts.test.ts
+│       ├── funds.test.ts
 │       ├── helpers.ts
+│       ├── moncash.test.ts
 │       ├── obp.test.ts
+│       ├── password.test.ts
+│       ├── qr.test.ts
+│       ├── scheduler.test.ts
 │       ├── security.test.ts
 │       └── transactions.test.ts
-├── shared/
+├── shared
 │   ├── phoneFormatter.ts
 │   ├── recipientUtils.ts
 │   ├── schemas.ts
 │   └── types.ts
-├── src/
-│   └── assets/
-│       └── images/
+├── src
+│   └── assets
+│       └── images
 │           └── logo-piyes-ppl-wh-wh-svg.svg
 ├── .env
 ├── .env.example
@@ -270,13 +282,13 @@ Chaque fichier démarre un vrai serveur sur son port dédié et joue les flux vi
 
 ### 3. Voir le détail des tests
 
-Afficher le détail de chaque test (lignes `ok`/`not ok` + noms) :
+**Afficher le détail de chaque test (lignes `ok`/`not ok` + noms) :**
 
 ```bash
 npm test 2>&1 | grep -E "^(ok|not ok)"
 ```
 
-Un seul fichier, pour voir un flux précis (ex. les transferts) :
+**Un seul fichier, pour voir un flux précis (ex. les transferts) :**
 
 ```bash
 npx tsx --test server/test/transactions.test.ts
@@ -289,11 +301,63 @@ npx tsx --test server/test/transactions.test.ts
 - `obp.test.ts` — clés API, endpoints publics Open Banking, révocation
 - `transactions.test.ts` — transfert, idempotence, solde insuffisant, mauvais PIN, historique
 
-Détail verbeux (noms + durée) :
+**Détail verbeux (noms + durée) :**
 
 ```bash
 npx tsx --test --test-reporter spec server/test/*.test.ts
 ```
+
+**Test moncash terminal**
+
+## Vérification manuelle
+
+---
+
+### 1\. Tester le token OAuth seul (curl)
+
+```powershell
+  $clientId = "4d1d47926758fa27c42175fe6d1780a8"
+  $clientSecret = "3KTYedyQ6RL3w0TfJBnF_CejmX-7BkWJFyQLZ5bQVgmQzhcW2oKwb5PYI4Xrzk5d"
+  $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${clientId}:${clientSecret}"))
+
+  $body = "scope=read,write&grant_type=client_credentials"
+  $headers = @{
+      "Authorization" = "Basic $basic"
+      "Content-Type" = "application/x-www-form-urlencoded"
+  }
+
+  $response = Invoke-RestMethod -Method POST -Uri "https://sandbox.moncashbutton.digicelgroup.com/Api/oauth/token" -Headers $headers -Body $body
+  $response.access_token
+  # Doit retourner un token (longue chaîne)
+```
+
+### 2\. Créer un paiement (sandbox)
+
+```powershell
+  $token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzY29wZSI6WyJyZWFkLHdyaXRlIl0sImV4cCI6MTc4NjU5Nzc1NSwianRpIjoiZGI4NmM4ZTYtYzMwMi00OGRmLWExOTAtNmVkYzQ5NDg3MTJmIiwiY2xpZW50X2lkIjoiNGQxZDQ3OTI2NzU4ZmEyN2M0MjE3NWZlNmQxNzgwYTgifQ.hx0h2w5YkwbMWTptla3w6Z0oLvt21drN49OvgfMN33h3ZmvG-RKGAUwQ_64OizxkxmIbtg5WRDAY4xSSOekpHSCAY8DJ4mW4zYGz-nef4Zs2cXOYEybAdyrGJW4HQGNqY5f4-3VJ48s3d7bcff5MoJ6Z1Wzs86wGheGi_Mf0kZlRYjXAMYIPXoUFkslwKmz-dX3SxQbpr8xby0nBZvvmHBwkLJqslfWwiJw8pN35p1SLA_wGgpgeA8EhtyPL7WcYM61Ut7x6oZHlL2o-VHECENoIpCq2GT3ka2Gg027OF7x0146q_B6DqkRtOpUNm8Pus0Q09goziNYje88xLuzWXQ"
+  $body = @{ amount = 100; orderId = "test-$(Get-Date -Format 'yyyyMMdd-HHmmss')" } | ConvertTo-Json
+  $headers = @{
+      "Authorization" = "Bearer $token"
+      "Content-Type" = "application/json"
+  }
+  $response = Invoke-RestMethod -Method POST -Uri "https://sandbox.moncashbutton.digicelgroup.com/Api/v1/CreatePayment" -Headers $headers -Body $body
+  $response.payment_token.token
+  # Doit retourner un payment_token (ex: "abc123...")
+
+
+3./ Option 2 : Utiliser le chemin absolu (si le script existe)
+
+```
+
+# Vérifier d'abord que le fichier existe
+
+Test-Path scripts/moncash/test-flow.ps1
+
+# Si oui, exécuter avec le chemin absolu
+
+C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-backend\scripts\moncash\test-flow.ps1 -BaseUrl http://127.0.0.1:3000
+
+````
 
 ### Prérequis / notes
 
@@ -310,7 +374,7 @@ cd C:\Users\mmarc\Documents\Programming\myProjects\piYes_projects\piyes-wallet-b
 npm install
 npm run build
 vercel --prod
-```
+````
 
 After a successful production deploy you should see:
 
