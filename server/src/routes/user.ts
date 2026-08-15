@@ -8,6 +8,12 @@ import {
   getOtpChallengeMetadata,
 } from "../services/otpService.js";
 import { sendOtp } from "../services/otpDeliveryService.js";
+import {
+  lockoutKey,
+  checkLockout,
+  recordFailure,
+  recordSuccess,
+} from "../services/lockoutService.ts";
 import crypto from "crypto";
 
 const router = express.Router();
@@ -307,6 +313,31 @@ router.delete("/delete", authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    // Ré-authentification : le mot de passe est requis pour supprimer le compte
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({
+        error: {
+          message: "Mot de passe requis pour supprimer le compte",
+          code: "PASSWORD_REQUIRED",
+        },
+      });
+    }
+    const { data: userWithPw } = await supabase
+      .from("User")
+      .select("passwordHash")
+      .eq("id", userId)
+      .single();
+    const bcryptCheck = await import("bcryptjs");
+    const pwValid = userWithPw?.passwordHash
+      ? await bcryptCheck.compare(password, userWithPw.passwordHash)
+      : false;
+    if (!pwValid) {
+      return res.status(403).json({
+        error: { message: "Mot de passe incorrect", code: "INVALID_PASSWORD" },
+      });
+    }
+
     // Fetch current user name
     const { data: user } = await supabase
       .from("User")
@@ -347,8 +378,24 @@ router.post("/privacy", authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const settings = req.body;
-    const { id, userId: _, ...data } = settings;
+    // Whitelist stricte des champs PrivacySettings
+    const PRIVACY_FIELDS = [
+      "blockRequestsFrom",
+      "blockTransfersFrom",
+      "blockedEntities",
+      "visibility",
+      "allowAnonymousTransfers",
+      "hideTagInReceipts",
+      "requestsOnlyFromFriends",
+    ] as const;
+    const data: any = {
+      updatedAt: new Date().toISOString(),
+    };
+    for (const field of PRIVACY_FIELDS) {
+      if ((req.body as any)[field] !== undefined) {
+        data[field] = (req.body as any)[field];
+      }
+    }
 
     const { error } = await supabase
       .from("PrivacySettings")
@@ -415,6 +462,7 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
       timezone,
       avatarUrl,
       otpCode,
+      phoneOtpCode,
     } = req.body;
 
     // Fetch current user to compare
@@ -441,18 +489,12 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
     const phoneChanged =
       normalizedPhone && normalizedPhone !== currentUser.phone;
 
-    if (emailChanged || phoneChanged) {
-      if (!otpCode) {
-        return res.status(400).json({
-          error: {
-            message:
-              "Vérification OTP requise pour changer l'email ou le téléphone",
-            code: "OTP_REQUIRED",
-          },
-        });
-      }
-      const target = emailChanged ? email.toLowerCase() : normalizedPhone;
-      // Retrouve le challenge actif le plus récent pour la cible
+    // Vérification OTP : chaque canal modifié est vérifié indépendamment.
+    const verifyChannelOtp = async (
+      target: string,
+      code: string | undefined,
+    ) => {
+      if (!code) return false;
       const { data: challenge } = await supabaseService
         .from("otp_challenge")
         .select("id")
@@ -462,9 +504,35 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      const isValid = challenge?.id
-        ? await verifyOtpChallenge(challenge.id, otpCode)
+      return challenge?.id
+        ? await verifyOtpChallenge(challenge.id, code)
         : false;
+    };
+
+    if (emailChanged && phoneChanged) {
+      const emailOk = await verifyChannelOtp(email.toLowerCase(), otpCode);
+      const phoneOk = await verifyChannelOtp(normalizedPhone, phoneOtpCode);
+      if (!emailOk || !phoneOk) {
+        return res.status(400).json({
+          error: {
+            message: "Code invalide ou expiré",
+            code: "INVALID_OTP",
+          },
+        });
+      }
+    } else if (emailChanged || phoneChanged) {
+      const target = emailChanged ? email.toLowerCase() : normalizedPhone;
+      const code = emailChanged ? otpCode : phoneOtpCode || otpCode;
+      if (!code) {
+        return res.status(400).json({
+          error: {
+            message:
+              "Vérification OTP requise pour changer l'email ou le téléphone",
+            code: "OTP_REQUIRED",
+          },
+        });
+      }
+      const isValid = await verifyChannelOtp(target, code);
       if (!isValid) {
         return res.status(400).json({
           error: { message: "Code invalide ou expiré", code: "INVALID_OTP" },
@@ -562,6 +630,30 @@ router.post("/pin", authMiddleware, async (req: AuthRequest, res) => {
     if (!pin || pin.length !== 4)
       return res.status(400).json({ error: "Invalid PIN" });
 
+    const { data: existing } = await supabase
+      .from("User")
+      .select("pinHash")
+      .eq("id", userId)
+      .single();
+
+    // Si un PIN est déjà configuré, exiger l'ancien PIN pour le changer
+    if (existing?.pinHash) {
+      const { currentPin } = req.body;
+      if (!currentPin)
+        return res.status(400).json({
+          error: { message: "PIN actuel requis", code: "CURRENT_PIN_REQUIRED" },
+        });
+      const bcryptCheck = await import("bcryptjs");
+      const isCurrentValid = await bcryptCheck.compare(
+        currentPin,
+        existing.pinHash,
+      );
+      if (!isCurrentValid)
+        return res.status(400).json({
+          error: { message: "PIN actuel incorrect", code: "INVALID_PIN" },
+        });
+    }
+
     const bcrypt = await import("bcryptjs");
     const pinHash = await bcrypt.hash(pin, 10);
 
@@ -587,6 +679,18 @@ router.post("/pin/verify", authMiddleware, async (req: AuthRequest, res) => {
     const { pin } = req.body;
     if (!pin) return res.status(400).json({ error: "PIN is required" });
 
+    // Verrouillage par compte : anti-brute-force PIN (4 chiffres)
+    const pinKey = lockoutKey("pin", userId);
+    const lock = checkLockout(pinKey);
+    if (lock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives PIN. Réessayez plus tard.",
+          code: "PIN_LOCKED",
+        },
+      });
+    }
+
     const { data: user } = await supabase
       .from("User")
       .select("pinHash")
@@ -602,11 +706,13 @@ router.post("/pin/verify", authMiddleware, async (req: AuthRequest, res) => {
     const bcrypt = await import("bcryptjs");
     const isValid = await bcrypt.compare(pin, user.pinHash);
     if (!isValid) {
+      recordFailure(pinKey);
       return res.status(400).json({
         error: { message: "PIN incorrect", code: "INVALID_PIN" },
       });
     }
 
+    recordSuccess(pinKey);
     res.json({ success: true });
   } catch (error) {
     console.error("PIN verification error:", error);
@@ -959,6 +1065,14 @@ router.post("/by-phones", authMiddleware, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: "Liste de phones requise" });
     }
 
+    // Limite stricte : pas d'exfiltration massive de l'annuaire
+    const MAX_PHONES = 50;
+    if (phones.length > MAX_PHONES) {
+      return res
+        .status(400)
+        .json({ error: `Maximum ${MAX_PHONES} numéros par requête` });
+    }
+
     // Build all format variants for each phone to maximize DB matches
     const phoneVariants = [
       ...new Set(
@@ -973,7 +1087,7 @@ router.post("/by-phones", authMiddleware, async (req: AuthRequest, res) => {
 
     const { data: users, error } = await supabase
       .from("User")
-      .select("id, phone, name, tag, avatarUrl")
+      .select("id, name, tag, avatarUrl")
       .in("phone", phoneVariants);
 
     if (error) {

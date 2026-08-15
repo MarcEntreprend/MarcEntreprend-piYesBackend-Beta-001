@@ -55,6 +55,31 @@ router.get("/openapi.yaml", (req, res) => {
 // ============================================================
 // 3. PAGE SWAGGER UI
 // ============================================================
+
+// Script d'initialisation servi depuis 'self' (autorise par la CSP sans
+// 'unsafe-inline') : la config SwaggerUIBundle vit dans un fichier séparé.
+const INIT_JS = `window.onload = () => {
+  window.ui = SwaggerUIBundle({
+    url: "/api-docs/openapi.yaml",
+    dom_id: "#swagger-ui",
+    deepLinking: true,
+    presets: [SwaggerUIBundle.presets.apis],
+    persistAuthorization: true,
+    // Configuration pour supporter les URLs OBP (sans /api/v1)
+    requestInterceptor: (req) => {
+      if (req.url.includes("/obp/v3.1.0/") && req.url.includes("/api/v1/obp/")) {
+        req.url = req.url.replace("/api/v1/obp/", "/obp/");
+      }
+      return req;
+    },
+  });
+};
+`;
+
+router.get("/swagger-ui-init.js", (req, res) => {
+  res.type("application/javascript").send(INIT_JS);
+});
+
 router.get("/", (req, res) => {
   const html = `<!DOCTYPE html>
 <html lang="fr">
@@ -71,30 +96,7 @@ router.get("/", (req, res) => {
 <body>
   <div id="swagger-ui"></div>
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script>
-    window.onload = () => {
-      window.ui = SwaggerUIBundle({
-        url: "/api-docs/openapi.yaml",
-        dom_id: "#swagger-ui",
-        deepLinking: true,
-        presets: [SwaggerUIBundle.presets.apis],
-        persistAuthorization: true,
-        // ✅ Configuration pour supporter les URLs OBP (sans /api/v1)
-        // Note : les endpoints OBP ont leur propre serveur via x-servers dans openapi.yaml
-        // Sinon, on peut surcharger l'URL de base ici
-        requestInterceptor: (req) => {
-          // Si la requête contient /obp/v3.1.0 et commence par /api/v1, on corrige
-          if (req.url.includes("/obp/v3.1.0/")) {
-            // Vérifier si l'URL contient /api/v1 (qui est le serveur par défaut)
-            if (req.url.includes("/api/v1/obp/")) {
-              req.url = req.url.replace("/api/v1/obp/", "/obp/");
-            }
-          }
-          return req;
-        },
-      });
-    };
-  </script>
+  <script src="/api-docs/swagger-ui-init.js"></script>
 </body>
 </html>`;
   res.type("text/html").send(html);

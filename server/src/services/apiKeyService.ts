@@ -58,14 +58,20 @@ export async function createApiKey(
   };
 }
 
-// Révocation d'une clé.
-export async function revokeApiKey(id: string): Promise<boolean> {
+// Révocation d'une clé. Le propriétaire doit être fourni pour éviter qu'un
+// utilisateur ne révoque une clé qui ne lui appartient pas (IDOR).
+export async function revokeApiKey(
+  id: string,
+  ownerUserId: string | null,
+): Promise<boolean> {
   //  Utiliser supabaseService pour contourner RLS
-  const { error } = await supabaseService
+  let query = supabaseService
     .from("piyes_api_key")
     .update({ status: "revoked", revokedAt: new Date().toISOString() })
     .eq("id", id);
-  return !error;
+  if (ownerUserId) query = query.eq("ownerUserId", ownerUserId);
+  const { error, count } = await query.select("id");
+  return !error && (count ?? 1) > 0;
 }
 
 // Liste des clés (hors hash) d'un propriétaire, ou toutes si ownerUserId null.
@@ -85,12 +91,14 @@ export async function listApiKeys(
 }
 
 // Valide une clé API : active + met à jour lastUsedAt. Retourne l'id.
-export async function validateApiKey(apiKey: string): Promise<string | null> {
+export async function validateApiKey(
+  apiKey: string,
+): Promise<{ id: string; ownerUserId: string | null } | null> {
   const hash = sha256(apiKey);
   //  Utiliser supabaseService pour contourner RLS
   const { data, error } = await supabaseService
     .from("piyes_api_key")
-    .select("id, status")
+    .select("id, status, ownerUserId")
     .eq("apiKeyHash", hash)
     .maybeSingle();
 
@@ -103,7 +111,7 @@ export async function validateApiKey(apiKey: string): Promise<string | null> {
     .update({ lastUsedAt: new Date().toISOString() })
     .eq("id", data.id)
     .then();
-  return data.id;
+  return { id: data.id, ownerUserId: data.ownerUserId };
 }
 
 // Middleware Express : protège une route par clé API (Bearer ou X-API-Key).
@@ -122,11 +130,12 @@ export function apiKeyAuth(req: any, res: any, next: any) {
   }
 
   validateApiKey(header)
-    .then((keyId) => {
-      if (!keyId) {
+    .then((keyInfo) => {
+      if (!keyInfo) {
         return res.status(401).json({ message: "Invalid or revoked API key" });
       }
-      (req as any).apiKeyId = keyId;
+      (req as any).apiKeyId = keyInfo.id;
+      (req as any).apiKeyOwnerUserId = keyInfo.ownerUserId;
       next();
     })
     .catch(() => res.status(500).json({ message: "API key check failed" }));

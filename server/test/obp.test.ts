@@ -23,10 +23,12 @@ before(async () => {
   const res = await signup(client);
   token = res.token;
 
+  // Compte appartenant à l'utilisateur authentifié (propriétaire de la clé)
   const { data: account } = await supabaseService
     .from("Account")
     .select("id")
     .eq("provider", "piyes")
+    .eq("userId", res.user.id)
     .limit(1)
     .maybeSingle();
   accountId = account?.id || "piyes-main";

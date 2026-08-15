@@ -130,6 +130,7 @@ router.delete("/:id", async (req: AuthRequest, res) => {
   try {
     // 🔧 Force la conversion en string pour éviter 'string | string[]'
     const keyId = String(req.params.id);
+    const ownerUserId = (req.user as any)?.id || null;
 
     if (!keyId) {
       return res.status(400).json({
@@ -140,7 +141,7 @@ router.delete("/:id", async (req: AuthRequest, res) => {
       });
     }
 
-    const success = await revokeApiKey(keyId);
+    const success = await revokeApiKey(keyId, ownerUserId);
 
     if (!success) {
       return res.status(404).json({

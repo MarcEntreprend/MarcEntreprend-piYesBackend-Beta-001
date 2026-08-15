@@ -18,13 +18,13 @@ Conforme à `api/RestAPI_MonCash.md`.
 
 Copier `.env.example` vers `.env` et renseigner :
 
-| Variable                | Description                                                                                        |
-| ----------------------- | -------------------------------------------------------------------------------------------------- |
-| `MONCASH_CLIENT_ID`     | Client ID fourni par Digicel (sandbox)                                                             |
-| `MONCASH_CLIENT_SECRET` | Client secret fourni par Digicel (sandbox)                                                         |
-| `MONCASH_API_HOST`      | Base API. Par défaut `https://sandbox.moncashbutton.digicelgroup.com/Api`                          |
-| `MONCASH_GATEWAY_URL`   | URL de redirection. Par défaut `https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware` |
-| `MONCASH_ADMIN_SECRET`  | Secret admin pour `GET /moncash/prefunded-balance`                                                 |
+| Variable | Description |
+| --- | --- |
+| `MONCASH_CLIENT_ID` | Client ID fourni par Digicel (sandbox) |
+| `MONCASH_CLIENT_SECRET` | Client secret fourni par Digicel (sandbox) |
+| `MONCASH_API_HOST` | Base API. Par défaut `https://sandbox.moncashbutton.digicelgroup.com/Api` |
+| `MONCASH_GATEWAY_URL` | URL de redirection. Par défaut `https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware` |
+| `MONCASH_ADMIN_SECRET` | Secret admin pour `GET /moncash/prefunded-balance` |
 
 > En test, `MONCASH_API_HOST` peut pointer vers un serveur local
 > (`http://127.0.0.1:PORT/Api`) pour simuler l'API sans réseau.
@@ -43,7 +43,6 @@ piyes-api
 ```
 
 `moncashService.ts` :
-
 - `envConfig()` relit les variables d'environnement à chaque appel (testable).
 - `request()` centralise les appels HTTP (timeout 15 s, `AbortController`).
 - `getAccessToken()` met en cache le token OAuth ~50 s (TTL MonCash 59 s).
@@ -62,9 +61,9 @@ Fonctions exposées :
 
 ## Comptes ledger
 
-| Code   | Nom                         | Type  | Usage                                               |
-| ------ | --------------------------- | ----- | --------------------------------------------------- |
-| `1001` | Caisse piYès HTG            | ASSET | Dépôts/retraits internes                            |
+| Code | Nom | Type | Usage |
+| --- | --- | --- | --- |
+| `1001` | Caisse piYès HTG | ASSET | Dépôts/retraits internes |
 | `1002` | Compte préfondé MonCash HTG | ASSET | Dépôts MonCash (crédit) et retraits MonCash (débit) |
 
 Le compte préfondé `1002` est créé automatiquement par
@@ -90,19 +89,15 @@ Dépôt depuis un compte lié.
 Confirme un dépôt MonCash. Anti-rejeu.
 
 Body :
-
 ```json
 { "transactionId": "12874820" }
 ```
-
 ou
-
 ```json
 { "orderId": "uuid-du-deposit" }
 ```
 
 Déroulé :
-
 1. `RetrieveTransactionPayment(transactionId)` ou `RetrieveOrderPayment(orderId)`.
 2. Si `payment.message === "successful"` :
    - Anti-rejeu : si une Transaction existe déjà avec ce `moncashTransactionId`
@@ -136,7 +131,6 @@ Cible interne `piyes` : retrait classique via la caisse `1001` (inchangé).
 ```json
 { "orderId": "..." }
 ```
-
 Retourne `retrieveOrderPayment(orderId)`.
 
 ### `POST /transactions/moncash/transfer-status`
@@ -144,7 +138,6 @@ Retourne `retrieveOrderPayment(orderId)`.
 ```json
 { "reference": "ref-payout" }
 ```
-
 Retourne `prefundedTransactionStatus(reference)` (statut d'un payout).
 
 ### `GET /transactions/moncash/prefunded-balance`
@@ -202,15 +195,14 @@ sequenceDiagram
 
 ### Colonnes `Transaction` (ajouts MonCash)
 
-| Colonne                | Type | Description                                        |
-| ---------------------- | ---- | -------------------------------------------------- |
-| `moncashTransactionId` | text | `transaction_id` MonCash (payout ou payment)       |
-| `moncashReference`     | text | `reference` MonCash (idempotence payout / payment) |
-| `payment_order_id`     | text | id de l'ordre ledger (`postOrder`)                 |
-| `status`               | text | `PENDING` (dépôt en attente) / `COMPLETED`         |
+| Colonne | Type | Description |
+| --- | --- | --- |
+| `moncashTransactionId` | text | `transaction_id` MonCash (payout ou payment) |
+| `moncashReference` | text | `reference` MonCash (idempotence payout / payment) |
+| `payment_order_id` | text | id de l'ordre ledger (`postOrder`) |
+| `status` | text | `PENDING` (dépôt en attente) / `COMPLETED` |
 
 > `status` : si la colonne n'existe pas en base, la créer via :
->
 > ```sql
 > ALTER TABLE "Transaction" ADD COLUMN IF NOT EXISTS status text DEFAULT NULL;
 > NOTIFY pgrst, 'reload schema';
@@ -219,10 +211,10 @@ sequenceDiagram
 ### RPC ledger utilisées
 
 - `piyes_ledger_get_or_create_customer_account(p_customer_user_id, p_name,
-p_piyes_account_id, p_piyes_user_id, p_initial_balance_cents)`
+  p_piyes_account_id, p_piyes_user_id, p_initial_balance_cents)`
 - `piyes_ledger_post(p_idempotency_key, p_type, p_customer_user_id,
-p_amount_cents, p_debit_account_id, p_credit_account_id, p_description,
-p_external_ref)`
+  p_amount_cents, p_debit_account_id, p_credit_account_id, p_description,
+  p_external_ref)`
 
 > Attention : `p_customer_user_id` doit toujours être renseigné (non `undefined`),
 > sinon PostgREST lève `PGRST202` (fonction introuvable dans le schema cache).
@@ -256,7 +248,6 @@ dépendre de la suite TS. Ils s'appuient sur les mêmes endpoints publics que
 l'app mobile.
 
 Prérequis :
-
 1. Serveur démarré : `npm run dev` (ou `npx tsx server.ts`).
 2. `.env` renseigné avec `MONCASH_CLIENT_ID` / `MONCASH_CLIENT_SECRET`
    (sandbox réelle, ou mock local pointé par `MONCASH_API_HOST`).
@@ -264,7 +255,7 @@ Prérequis :
    `Set-UserBalance`).
 4. `MONCASH_ADMIN_SECRET` pour tester le `200` de `/prefunded-balance`.
 
-### Flow complet (``)
+### Flow complet (`test-flow.ps1`)
 
 Signup → PIN → lien compte MonCash → deposit → confirm (ledger crédité) →
 anti-rejeu → withdraw payout → erreur sans PIN.
@@ -306,11 +297,11 @@ Un échec (`Fail > 0`) fait sortir le script avec le code `1`.
 
 ## Dépannage
 
-| Symptôme                             | Cause                                                 | Correctif                                              |
-| ------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------ |
-| `MONCASH_CONFIG`                     | `MONCASH_CLIENT_ID`/`MONCASH_CLIENT_SECRET` manquants | Renseigner le `.env`                                   |
-| `LEDGER_NOT_INITIALIZED`             | Fonction RPC ledger introuvable (PGRST202)            | Vérifier `ledger.sql` + `p_customer_user_id` renseigné |
-| `Could not find the 'status' column` | Colonne `status` absente de `Transaction`             | `ALTER TABLE` (voir section base de données)           |
-| `MONCASH_CUSTOMER_INELIGIBLE`        | Compte non fullkyc / inactif                          | Vérifier le numéro MonCash                             |
-| `MONCASH_PREFUNDED_INSUFFICIENT`     | Solde préfondé < montant                              | Approvisionner le compte préfondé                      |
-| `FORBIDDEN` (prefunded-balance)      | `x-admin-secret` manquant/incorrect                   | Vérifier `MONCASH_ADMIN_SECRET`                        |
+| Symptôme | Cause | Correctif |
+| --- | --- | --- |
+| `MONCASH_CONFIG` | `MONCASH_CLIENT_ID`/`MONCASH_CLIENT_SECRET` manquants | Renseigner le `.env` |
+| `LEDGER_NOT_INITIALIZED` | Fonction RPC ledger introuvable (PGRST202) | Vérifier `ledger.sql` + `p_customer_user_id` renseigné |
+| `Could not find the 'status' column` | Colonne `status` absente de `Transaction` | `ALTER TABLE` (voir section base de données) |
+| `MONCASH_CUSTOMER_INELIGIBLE` | Compte non fullkyc / inactif | Vérifier le numéro MonCash |
+| `MONCASH_PREFUNDED_INSUFFICIENT` | Solde préfondé < montant | Approvisionner le compte préfondé |
+| `FORBIDDEN` (prefunded-balance) | `x-admin-secret` manquant/incorrect | Vérifier `MONCASH_ADMIN_SECRET` |

@@ -12,14 +12,8 @@
 
 import { Resend } from "resend";
 
-// avant
-// const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-// const FROM_EMAIL = process.env.OTP_FROM_EMAIL || "marc.entreprend@gmail.com";
-
-// Forcer le fallback en dev
-const RESEND_API_KEY =
-  process.env.NODE_ENV === "production" ? process.env.RESEND_API_KEY || "" : "";
-const FROM_EMAIL = process.env.OTP_FROM_EMAIL || "marc.entreprend@gmail.com";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const FROM_EMAIL = process.env.OTP_FROM_EMAIL || "piyes@piyes.app";
 
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
@@ -90,8 +84,8 @@ export async function sendOtp(
     }
   }
 
-  // Dev : journalisation console (aucun provider configuré ou non-prod)
-  if (process.env.NODE_ENV !== "production" || purpose !== "generic") {
+  // Dev : journalisation console (jamais en production, même sans provider)
+  if (process.env.NODE_ENV !== "production") {
     console.log("\n" + "█".repeat(60));
     console.log("█" + " ".repeat(58) + "█");
     console.log("█" + "   [DEV] OTP CODE GENERATED".padEnd(58) + "█");

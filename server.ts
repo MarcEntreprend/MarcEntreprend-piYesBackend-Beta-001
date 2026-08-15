@@ -8,7 +8,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { fileURLToPath } from "url";
 
-//  IMPORTS AVEC .ts (pour tsx)
+// ✅ IMPORTS AVEC .ts (pour tsx)
 import authRoutes from "./server/src/routes/auth.ts";
 import userRoutes from "./server/src/routes/user.ts";
 import transactionsRoutes from "./server/src/routes/transactions.ts";
@@ -19,11 +19,11 @@ import servicesRoutes from "./server/src/routes/services.ts";
 import promotionsRoutes from "./server/src/routes/promotions.ts";
 import banksRoutes from "./server/src/routes/banks.ts";
 
-//  PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
+// ✅ PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
 import obpKeysRoutes from "./server/src/routes/obpKeys.ts";
 import obpFacadeRoutes from "./server/src/routes/obpFacade.ts";
 
-//  SÉCURITÉ – middlewares de protection
+// ✅ SÉCURITÉ – middlewares de protection
 import {
   globalLimiter,
   authLimiter,
@@ -31,6 +31,7 @@ import {
   pinLimiter,
   fundsLimiter,
   apiKeyLimiter,
+  obpLimiter,
 } from "./server/src/middleware/rateLimit.ts";
 import { errorHandler } from "./server/src/middleware.ts";
 
@@ -62,7 +63,12 @@ async function initializeApp() {
   }
 
   // Middleware
-  app.set("trust proxy", 1);
+  // Ne fie au header X-Forwarded-For que derrière un proxy de confiance
+  // (production) ou si TRUST_PROXY est explicitement activé. En dev/test,
+  // le spoofing X-Forwarded-For ne permet pas de contourner les rate limiters IP.
+  const trustProxyEnabled =
+    process.env.TRUST_PROXY === "1" || process.env.NODE_ENV === "production";
+  if (trustProxyEnabled) app.set("trust proxy", 1);
   app.use(
     helmet({
       crossOriginResourcePolicy: false,
@@ -70,17 +76,9 @@ async function initializeApp() {
         directives: {
           defaultSrc: ["'self'"],
           styleSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
-          scriptSrc: [
-            "'self'",
-            "'unsafe-inline'", // nécessaire pour Swagger UI
-            "https://unpkg.com",
-          ],
+          scriptSrc: ["'self'", "https://unpkg.com"],
           imgSrc: ["'self'", "data:", "https:"],
-          connectSrc: [
-            "'self'",
-            "https://unpkg.com",
-            "https://*.unpkg.com", // pour les sous-domaines
-          ],
+          connectSrc: ["'self'", "https://unpkg.com"],
         },
       },
     }),
@@ -88,10 +86,6 @@ async function initializeApp() {
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ limit: "10mb", extended: true }));
   app.use(cookieParser());
-
-  // Servir les fichiers statiques (favicon, images, etc.)
-  app.use(express.static(path.join(__dirname, "public")));
-  console.log(">>> [STARTUP] Static files mounted from /public");
 
   // CORS
   const allowedOrigins: (string | RegExp)[] = [
@@ -186,7 +180,7 @@ async function initializeApp() {
   // PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
   // ============================================================
   app.use("/obp/v3.1.0/keys", apiKeyLimiter, obpKeysRoutes);
-  app.use("/obp/v3.1.0", obpFacadeRoutes);
+  app.use("/obp/v3.1.0", obpLimiter, obpFacadeRoutes);
   console.log(">>> [STARTUP] OBP routes mounted at /obp/v3.1.0");
 
   // ============================================================

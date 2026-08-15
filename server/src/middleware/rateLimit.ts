@@ -90,3 +90,16 @@ export const apiKeyLimiter = rateLimit({
     },
   },
 });
+
+export const obpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: num(process.env.RATE_LIMIT_OBP, 60),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      message: "Trop de requêtes OBP. Réessayez dans une minute.",
+      code: "TOO_MANY_REQUESTS",
+    },
+  },
+});

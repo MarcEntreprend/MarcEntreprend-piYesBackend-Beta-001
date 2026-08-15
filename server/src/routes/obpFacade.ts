@@ -25,8 +25,10 @@ import { apiKeyAuth } from "../services/apiKeyService.js";
 const router = express.Router();
 
 const OBP_BASE_URL = process.env.OBP_BASE_URL || "";
-const OBP_USERNAME = process.env.OBP_USERNAME || "demo.client1@piyes.app";
-const OBP_PASSWORD = process.env.OBP_PASSWORD || "PiyesDemo2026!";
+// Pas de fallback codé en dur : le proxy n'est utilisable qu'avec des
+// credentials explicitement fournies par l'opérateur.
+const OBP_USERNAME = process.env.OBP_USERNAME || "";
+const OBP_PASSWORD = process.env.OBP_PASSWORD || "";
 const OBP_CONSUMER_KEY = process.env.OBP_CONSUMER_KEY || "";
 
 let cachedToken: string | null = null;
@@ -36,6 +38,12 @@ const TOKEN_TTL_MS = 60 * 60 * 1000;
 async function getDirectLoginToken(): Promise<string> {
   if (cachedToken && Date.now() - cachedTokenAt < TOKEN_TTL_MS)
     return cachedToken;
+
+  if (!OBP_BASE_URL || !OBP_USERNAME || !OBP_PASSWORD) {
+    throw new Error(
+      "OBP proxy requires OBP_BASE_URL, OBP_USERNAME, OBP_PASSWORD",
+    );
+  }
 
   let authHeader = `DirectLogin username="${OBP_USERNAME}",password="${OBP_PASSWORD}"`;
   if (OBP_CONSUMER_KEY) authHeader += `,consumer_key="${OBP_CONSUMER_KEY}"`;
@@ -137,11 +145,19 @@ router.get(
 
       const { data: account } = await supabase
         .from("Account")
-        .select("id, label, provider")
+        .select("id, label, provider, userId")
         .eq("id", req.params.accountId)
         .single();
       if (!account)
         return res.status(404).json({ message: "Account not found" });
+
+      // Contrôle d'accès : seuls les comptes appartenant au propriétaire de la
+      // clé API sont lisibles via l'API publique (évite l'IDOR).
+      // Une clé sans propriétaire (ownerUserId null) n'a aucun accès.
+      const ownerUserId = (req as any).apiKeyOwnerUserId;
+      if (!ownerUserId || account.userId !== ownerUserId) {
+        return res.status(403).json({ message: "Account not found" });
+      }
 
       const { data: txns } = await supabase
         .from("Transaction")

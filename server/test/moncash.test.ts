@@ -554,3 +554,36 @@ test("deposit MonCash puis confirm par orderId → ledger crédité", async () =
   assert.equal(conf.json.amount, 1000);
   assert.equal(conf.json.moncashReference, "1559796839");
 });
+
+test("moncash/confirm : l'orderId d'un autre user → 403 ORDER_NOT_OWNED", async () => {
+  const a = await signup(client, { email: uniqueEmail("mcowna") });
+  await client.req("POST", "/api/v1/user/pin", {
+    token: a.token,
+    body: { pin: "1234" },
+  });
+  const linkA = await client.req("POST", "/api/v1/banks/link", {
+    token: a.token,
+    body: { bankId: "b2", username: "50937007294" },
+  });
+  const moncashAccountIdA = linkA.json.id;
+
+  const dep = await client.req("POST", "/api/v1/transactions/deposit", {
+    token: a.token,
+    body: { amount: 10, accountId: moncashAccountIdA, pin: "1234" },
+  });
+  assert.equal(dep.status, 200);
+  const orderId = dep.json.orderId;
+
+  // Le user B tente de confirmer l'ordre de A
+  const b = await signup(client, { email: uniqueEmail("mcownb") });
+  const conf = await client.req(
+    "POST",
+    "/api/v1/transactions/moncash/confirm",
+    {
+      token: b.token,
+      body: { orderId },
+    },
+  );
+  assert.equal(conf.status, 403);
+  assert.equal(conf.json.error.code, "ORDER_NOT_OWNED");
+});

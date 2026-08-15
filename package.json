@@ -7,7 +7,9 @@
     "dev": "tsx watch --tsconfig tsconfig.json server.ts",
     "build": "tsc --noEmit",
     "start": "node server.ts",
-    "test": "tsx --test \"server/test/*.test.ts\""
+    "test": "tsx --test \"server/test/*.test.ts\"",
+    "lint": "tsc --noEmit",
+    "lint:fix": "tsc --noEmit && eslint . --ext .ts --fix"
   },
   "dependencies": {
     "@google/genai": "^1.41.0",
@@ -27,6 +29,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
@@ -37,7 +40,12 @@
     "@types/node": "^22.14.0",
     "@types/pg": "^8.21.0",
     "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
+    "eslint": "^10.8.1",
+    "globals": "^17.11.0",
     "tsx": "^4.23.10",
-    "typescript": "~5.8.2"
+    "typescript": "~5.8.2",
+    "typescript-eslint": "^8.67.0"
   }
 }

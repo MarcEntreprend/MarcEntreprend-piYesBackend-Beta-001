@@ -18,6 +18,12 @@ import {
   JWT_ISSUER,
   JWT_AUDIENCE,
 } from "../middleware.js";
+import {
+  lockoutKey,
+  checkLockout,
+  recordFailure,
+  recordSuccess,
+} from "../services/lockoutService.js";
 
 const router = express.Router();
 
@@ -427,6 +433,21 @@ router.post("/login", async (req, res) => {
     }
     const device = validated.device || req.ip || "unknown";
 
+    // Verrouillage par compte : anti-brute-force indépendant de l'IP
+    const accountKey = lockoutKey(
+      "login",
+      (validated.email || validated.phone || "").toLowerCase(),
+    );
+    const lock = checkLockout(accountKey);
+    if (lock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives. Réessayez plus tard.",
+          code: "ACCOUNT_LOCKED",
+        },
+      });
+    }
+
     let query = supabase.from("User").select("*");
 
     if (validated.email) {
@@ -441,8 +462,9 @@ router.post("/login", async (req, res) => {
 
     const { data: user, error } = await query.single();
 
-    // message d'erreur login
+    // message d'erreur login (neutre : ne révèle pas si le compte existe)
     if (error || !user) {
+      recordFailure(accountKey);
       console.log(
         `[AUTH] Login FAILED: User not found for ${validated.email || validated.phone}`,
       );
@@ -460,15 +482,19 @@ router.post("/login", async (req, res) => {
       user.passwordHash,
     );
     if (!isPasswordValid) {
+      recordFailure(accountKey);
       console.log(`[AUTH] Login FAILED: Wrong password for user ${user.id}`);
       return res.status(401).json({
         error: {
           message:
-            'Mot de passe incorrect. Veuillez réessayer ou utiliser "Mot de passe oublié".',
-          code: "WRONG_PASSWORD",
+            "Identifiants incorrects. Vérifiez votre email/téléphone et mot de passe.",
+          code: "INVALID_CREDENTIALS",
         },
       });
     }
+
+    // Mot de passe correct → on réinitialise le compteur d'échecs
+    recordSuccess(accountKey);
 
     // Vérifier si le compte est désactivé (permission 'non')
     const { data: userAccount } = await supabase
@@ -621,6 +647,18 @@ router.post("/verify-session-otp", async (req, res) => {
       });
     }
 
+    // Verrouillage par compte OTP : anti-brute-force du code à 6 chiffres
+    const otpKey = lockoutKey("otp", session.userId);
+    const otpLock = checkLockout(otpKey);
+    if (otpLock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives de code. Réessayez plus tard.",
+          code: "OTP_LOCKED",
+        },
+      });
+    }
+
     const otpValid = session.challengeId
       ? await verifyOtpChallenge(session.challengeId, code)
       : false;
@@ -628,10 +666,13 @@ router.post("/verify-session-otp", async (req, res) => {
       !session.otpExpiresAt || new Date() <= new Date(session.otpExpiresAt);
 
     if (!otpValid || !notExpired) {
+      recordFailure(otpKey);
       return res.status(400).json({
         error: { message: "Code incorrect ou expiré", code: "INVALID_OTP" },
       });
     }
+
+    recordSuccess(otpKey);
 
     await supabase
       .from("Session")
@@ -839,9 +880,7 @@ router.post("/reset-password", async (req, res) => {
       target = target.toLowerCase();
     }
 
-    console.log(
-      `[AUTH] Reset password attempt for: ${target} with code: ${code}`,
-    );
+    console.log(`[AUTH] Reset password attempt for: ${target}`);
 
     const { data: user } = await supabase
       .from("User")
@@ -852,6 +891,18 @@ router.post("/reset-password", async (req, res) => {
     if (!user) {
       console.log(`[AUTH] Reset password FAILED: User not found for ${target}`);
       return res.status(400).json({ error: "Invalid or expired code" });
+    }
+
+    // Verrouillage par compte OTP (reset password)
+    const resetOtpKey = lockoutKey("otp-reset", user.id);
+    const resetLock = checkLockout(resetOtpKey);
+    if (resetLock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives de code. Réessayez plus tard.",
+          code: "OTP_LOCKED",
+        },
+      });
     }
 
     const { data: session, error: sessionError } = await supabase
@@ -870,8 +921,11 @@ router.post("/reset-password", async (req, res) => {
       new Date() <= new Date(session.otpExpiresAt);
 
     if (!challengeValid || !dbValid) {
+      recordFailure(resetOtpKey);
       return res.status(400).json({ error: "Invalid or expired code" });
     }
+
+    recordSuccess(resetOtpKey);
 
     if (session && new Date() > new Date(session.otpExpiresAt)) {
       console.log(
@@ -999,11 +1053,21 @@ router.post("/otp/resend", async (req, res) => {
     }
 
     // Cible directe (email/téléphone)
-    const challenge = await createOtpChallenge(requestId, "generic");
+    const directTarget = requestId.trim().replace(/\s+/g, "");
+    const existingDirect = await hasActiveChallenge(directTarget, "generic");
+    if (existingDirect) {
+      return res.status(429).json({
+        error: {
+          message: "Un code est déjà actif. Réessayez plus tard.",
+          code: "OTP_ALREADY_ACTIVE",
+        },
+      });
+    }
+    const challenge = await createOtpChallenge(directTarget, "generic");
     if (!challenge) {
       return res.status(500).json({ error: "Failed to create OTP challenge" });
     }
-    await sendOtp(requestId, challenge.code, "renvoi du code");
+    await sendOtp(directTarget, challenge.code, "renvoi du code");
     res.json({ success: true, message: "OTP resent successfully" });
   } catch (error) {
     console.error("OTP resend error:", error);
