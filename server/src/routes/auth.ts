@@ -135,7 +135,7 @@ router.post("/refresh", async (req, res) => {
     }
 
     const newAccessToken = jwt.sign(
-      { id: user.id, email: user.email },
+      { id: user.id, email: user.email, sid: session.id },
       ACCESS_SECRET,
       {
         expiresIn: "24h",
@@ -366,12 +366,20 @@ router.post("/signup", async (req, res) => {
     if (accError)
       console.error("Account creation error (non-bloquant):", accError);
 
-    const token = jwt.sign({ id: user.id, email: user.email }, ACCESS_SECRET, {
-      expiresIn: "24h",
-      issuer: JWT_ISSUER,
-      audience: JWT_AUDIENCE,
-      jwtid: crypto.randomUUID(),
-    });
+    // Create session
+    const { v4: uuidv4session } = await import("uuid");
+    const sessionId = uuidv4session();
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, sid: sessionId },
+      ACCESS_SECRET,
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
     const refreshToken = jwt.sign(
       { id: user.id, type: "refresh" },
       REFRESH_SECRET,
@@ -383,10 +391,8 @@ router.post("/signup", async (req, res) => {
       },
     );
 
-    // Create session
-    const { v4: uuidv4session } = await import("uuid");
     const { error: sessionError } = await supabase.from("Session").insert({
-      id: uuidv4session(),
+      id: sessionId,
       userId: user.id,
       token: refreshToken,
       device,
@@ -569,12 +575,18 @@ router.post("/login", async (req, res) => {
     }
 
     // No other device, or same device
-    const token = jwt.sign({ id: user.id, email: user.email }, ACCESS_SECRET, {
-      expiresIn: "24h",
-      issuer: JWT_ISSUER,
-      audience: JWT_AUDIENCE,
-      jwtid: crypto.randomUUID(),
-    });
+    const { v4: uuidv4login } = await import("uuid");
+    const loginSessionId = uuidv4login();
+    const token = jwt.sign(
+      { id: user.id, email: user.email, sid: loginSessionId },
+      ACCESS_SECRET,
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
     const refreshToken = jwt.sign(
       { id: user.id, type: "refresh" },
       REFRESH_SECRET,
@@ -586,9 +598,8 @@ router.post("/login", async (req, res) => {
       },
     );
 
-    const { v4: uuidv4login } = await import("uuid");
     const { error: loginSessionError } = await supabase.from("Session").insert({
-      id: uuidv4login(),
+      id: loginSessionId,
       userId: user.id,
       token: refreshToken,
       device,
@@ -691,7 +702,7 @@ router.post("/verify-session-otp", async (req, res) => {
       },
     );
     const token = jwt.sign(
-      { id: session.userId, email: session.user.email },
+      { id: session.userId, email: session.user.email, sid: session.id },
       ACCESS_SECRET,
       {
         expiresIn: "24h",
@@ -954,8 +965,10 @@ router.post("/reset-password", async (req, res) => {
       return res.status(500).json({ error: "User not found after reset" });
     }
 
+    const { v4: uuidv4 } = await import("uuid");
+    const resetSessionId = uuidv4();
     const token = jwt.sign(
-      { id: fullUser.id, email: fullUser.email },
+      { id: fullUser.id, email: fullUser.email, sid: resetSessionId },
       ACCESS_SECRET,
       {
         expiresIn: "24h",
@@ -975,9 +988,8 @@ router.post("/reset-password", async (req, res) => {
       },
     );
 
-    const { v4: uuidv4 } = await import("uuid");
     await supabase.from("Session").insert({
-      id: uuidv4(),
+      id: resetSessionId,
       userId: fullUser.id,
       token: refreshToken,
       device: "password_reset_auto_login",
@@ -1106,8 +1118,6 @@ router.post("/otp/verify", async (req, res) => {
         error: { message: "Invalid or expired code", code: "INVALID_OTP" },
       });
     }
-
-    console.log(`[SECURITY] OTP Verification SUCCESS for ${target}`);
 
     if (target.includes("@")) {
       await supabase

@@ -1,10 +1,5 @@
 // server/src/middleware.ts
 
-// TODO :
-// authMiddleware fait une requête SQL par requête protégée. C'est le prix de la révocation immédiate.
-// Pour une montée en charge, il faudra ajouter un cache (Redis)
-// mais pour une démo, c'est acceptable.
-
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { supabaseService } from "./supabase.js";
@@ -43,16 +38,24 @@ export const authMiddleware = async (
       algorithms: ["HS256"],
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
-    }) as { id: string; email: string };
+    }) as { id: string; email: string; sid?: string };
 
-    // Vérifier que la session existe encore en base et est active
+    // Le token doit référencer une session précise (sid) : un access token
+    // émis pour une session révoquée (logout-all, purge) est rejeté.
+    if (!decoded.sid) {
+      return res.status(401).json({
+        error: { message: "Token sans session", code: "UNAUTHORIZED" },
+      });
+    }
+
+    // Vérifier que cette session précise existe, est active et appartient au user
     const { data: session, error } = await supabaseService
       .from("Session")
       .select("id, isVerified, expiresAt")
+      .eq("id", decoded.sid)
       .eq("userId", decoded.id)
       .eq("isVerified", true)
       .gt("expiresAt", new Date().toISOString())
-      .limit(1)
       .maybeSingle();
 
     if (error || !session) {

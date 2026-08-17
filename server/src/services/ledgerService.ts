@@ -157,34 +157,8 @@ export interface PostOrderResult {
 export async function postOrder(
   input: PostOrderInput,
 ): Promise<PostOrderResult> {
-  console.log("[LEDGER] postOrder called with:", {
-    idempotencyKey: input.idempotencyKey,
-    type: input.type,
-    customerUserId: input.customerUserId,
-    amountCents: input.amountCents,
-    debitAccountId: input.debitAccountId,
-    creditAccountId: input.creditAccountId,
-    description: input.description,
-    externalRef: input.externalRef,
-  });
-
-  // Test de connexion RPC
-  console.log("[LEDGER] Testing RPC connection...");
-  const { data: testData, error: testError } = await supabase.rpc(
-    "piyes_ledger_get_or_create_customer_account",
-    {
-      p_customer_user_id: "test",
-      p_name: "test",
-      p_piyes_account_id: null,
-      p_piyes_user_id: null,
-      p_initial_balance_cents: 0,
-    },
-  );
-  console.log("[LEDGER] RPC test result:", testData, testError);
-  if (testError) {
-    console.error("[LEDGER] RPC test FAILED:", testError);
-    throw new Error(`RPC not accessible: ${testError.message}`);
-  }
+  // Pas d'appel RPC de test à chaque ordre : l'erreur de connexion est déjà
+  // capturée par l'appel p_ledger_post ci-dessous (perf : 1 appel au lieu de 2).
 
   const { data, error } = await supabase.rpc("piyes_ledger_post", {
     p_idempotency_key: input.idempotencyKey,

@@ -130,7 +130,12 @@ async function initializeApp() {
       },
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",
+        "x-admin-secret",
+      ],
       optionsSuccessStatus: 200,
     }),
   );

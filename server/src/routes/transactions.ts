@@ -1015,7 +1015,11 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       return res.json(transaction);
     }
 
-    // === Retrait interne piYès (inchangé) ===
+    // === Retrait interne piYès ===
+    // PIN obligatoire : sortie d'argent (même exigence que le retrait MonCash)
+    if (!validated.pin) throw new Error("PIN requis");
+    await verifyPin(user.pinHash, validated.pin);
+
     // === LEDGER : retrait = débit client / crédit caisse piYès ===
     const systemCashId = await getSystemCashAccountId();
     const ledgerId = await resolveLedgerForUser(user, accountId);

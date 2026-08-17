@@ -11,6 +11,7 @@ import {
   ledgerErrorResponse,
   postOrder,
 } from "../services/ledgerService.ts";
+import { verifyPin } from "../services/pinService.js";
 
 const router = express.Router();
 
@@ -64,6 +65,15 @@ router.post("/pay", authMiddleware, async (req: AuthRequest, res) => {
 
     const validated = servicePaySchema.parse(req.body);
     const amountCents = Math.round(validated.amount * 100);
+
+    // PIN obligatoire : paiement sortant d'argent
+    if (!validated.pin) throw new Error("PIN requis");
+    const { data: pinUser } = await supabase
+      .from("User")
+      .select("pinHash")
+      .eq("id", userId)
+      .single();
+    await verifyPin(pinUser?.pinHash || null, validated.pin);
 
     const { data: sender } = await supabase
       .from("User")

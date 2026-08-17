@@ -19,10 +19,18 @@ if (!supabaseServiceKey) {
   );
 }
 
-// Client ANON (utilisé pour les routes publiques / authentifiées)
-export const supabase = createClient(supabaseUrl!, supabaseAnonKey!);
+// Client principal du backend (service_role).
+// RLS est désormais activée sur les tables métier (rls-business-tables.sql)
+// avec des politiques service_role uniquement : la clé anon n'a plus accès
+// aux données. Le backend, qui applique ses propres contrôles d'autorisation
+// (authMiddleware + filtres userId), utilise donc la clé service_role.
+// La clé anon ne doit jamais être utilisée côté serveur pour les tables métier.
+export const supabase = createClient(
+  supabaseUrl!,
+  supabaseServiceKey || supabaseAnonKey!,
+);
 
-// Client SERVICE ROLE (contourne RLS – à utiliser pour les opérations sensibles internes)
+// Client SERVICE ROLE (contourne RLS – alias du client principal)
 export const supabaseService = supabaseServiceKey
   ? createClient(supabaseUrl!, supabaseServiceKey)
   : supabase;
