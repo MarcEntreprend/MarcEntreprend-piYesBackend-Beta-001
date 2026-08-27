@@ -185,6 +185,8 @@ npm install
    npm run dev
    ```
 
+   <!-- ou npx tsx server.ts?? -->
+
 3. Type-check (must report 0 errors):
 
    ```bash
