@@ -98,7 +98,7 @@ router.post("/refresh", async (req, res) => {
       res.clearCookie("refreshToken", {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
-        sameSite: "none",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       });
       return res.status(401).json({
         error: {

@@ -1510,7 +1510,7 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
       .range(Number(offset), Number(offset) + Number(limit) - 1);
     if (accountId) query = query.eq("accountId", accountId);
     if (counterpartyName)
-      query = query.eq("counterpartyName", counterpartyName);
+      query = query.ilike("counterpartyName", `%${counterpartyName}%`);
     const { data: transactions } = await query;
     res.json(
       (transactions || []).map((tx: any) => ({
