@@ -293,3 +293,34 @@ Features trackées :
 À lire depuis la console dev ou via un script d'extraction post-démo.
 
 ---
+
+# 📋 Hors-périmètre (dette non bloquante démo)
+
+## Liste
+
+- Tests frontend automatisés (équivalent des 72 tests backend) : chantier à part.
+- OBP console dev/admin : pas de UI dans le front.
+- MonCash end-user flow : pas de UI dans le front.
+- i18n complet (ht/en pour toutes les pages) : déjà partiel, on complète après.
+- Refactor du pattern `window.__loginResolve` : pas bloquant.
+- Refonte de `cacheService` chiffrement (Base64 → AES) : pas pour la démo.
+- KYC réel (Persona SDK) : pas pour la démo.
+- CI/CD : pas demandé.
+- Doublons backend (`/user/contact-update/:id`, `/contacts/suggestions`, etc.) : nettoyage à faire côté backend, pas bloquant.
+- Refonte du marketplace pour utiliser le BDD : chantier à part, 2-3 jours.
+- Migration DeepSeek côté backend : chantier sécurité, à part.
+- i18n codé en dur (ContactDetail, Feedback, etc.) : à passer par `t()` après la démo.
+- `/feedback` et `/privacy` orphelins : à câbler ou masquer dans la nav.
+
+## Note d'analyse : ce que j'ai raté dans l'audit précédent
+
+- `useSync.ts:9` lit le cache au mount (offline-first déjà bien fait) → non documenté.
+- `lockoutService.ts` du backend : 5 essais, 15min --- divergence avec les 3 du front.
+- `pinService.ts` du backend : simple `bcrypt.compare` → pas de nuance, OK.
+- `cacheService.clearSensitiveData` vs `clearAll` : à vérifier qu'on appelle la bonne au logout. D'après le code, `clearSensitiveData` vide aussi les `piyes_vault_*` via `clearAll()` (ligne 84-90, 92-93). → OK, pas un bug.
+- Le `useSync` polling 60s est documenté mais je n'avais pas noté qu'il y a aussi un `error` state mis à "Erreur de synchronisation" si le sync fail --- mais le cache est préservé (ligne 35-38), donc bonne UX offline.
+- Le MFA est déjà géré correctement côté backend (lockout 5 essais via `otpLimiter`, rotation des sessions). Donc le front qui n'a pas MFA est moins grave --- la vraie sécurité est côté serveur. À nuancer dans le README.
+- L'inter-bank transfer est aussi dépendant de `MONCASH_*` env vars. Si non configuré, la route renvoie 500. Pour la démo avec BUH/MonCash, c'est documenté backend.
+- Boutique/payService : la page "Services" n'est pas accessible depuis la nav principale (BottomNav a 3 items seulement). Donc fix non urgent.
+
+---
