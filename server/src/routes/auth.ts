@@ -48,7 +48,7 @@ router.post("/logout-all", authMiddleware, async (req: AuthRequest, res) => {
     res.clearCookie("refreshToken", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     });
     res.json({ success: true, message: "Logged out from all devices" });
   } catch (error) {
@@ -65,7 +65,11 @@ router.post("/logout-all", authMiddleware, async (req: AuthRequest, res) => {
 // ============================================================
 router.post("/refresh", async (req, res) => {
   try {
-    const refreshToken = req.cookies?.refreshToken;
+    // Pour la démo : accepte le refresh token depuis cookie (prod) OU body/header (fallback si cookie bloqué)
+    const refreshToken =
+      req.cookies?.refreshToken ||
+      req.body?.refreshToken ||
+      (req.headers["x-refresh-token"] as string);
     if (!refreshToken) {
       return res.status(401).json({
         error: { message: "Refresh token manquant", code: "UNAUTHORIZED" },
@@ -169,12 +173,13 @@ router.post("/refresh", async (req, res) => {
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
     res.json({
       token: newAccessToken,
+      refreshToken: newRefreshToken,
       user: { id: user.id, email: user.email },
     });
   } catch (error) {
@@ -406,7 +411,7 @@ router.post("/signup", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
@@ -422,6 +427,7 @@ router.post("/signup", async (req, res) => {
         balance: 0,
       },
       token,
+      refreshToken,
     });
   } catch (error: any) {
     console.error("Signup error:", error);
@@ -613,7 +619,7 @@ router.post("/login", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
@@ -631,6 +637,7 @@ router.post("/login", async (req, res) => {
         hasPin: !!user.pinHash,
       },
       token,
+      refreshToken,
     });
   } catch (error: any) {
     res
@@ -728,7 +735,7 @@ router.post("/verify-session-otp", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
@@ -746,6 +753,7 @@ router.post("/verify-session-otp", async (req, res) => {
         hasPin: !!session.user.pinHash,
       },
       token,
+      refreshToken,
     });
   } catch (error) {
     console.error("verify-session-otp error:", error);
@@ -1001,7 +1009,7 @@ router.post("/reset-password", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
