@@ -5,14 +5,41 @@ import express from "express";
 import path from "path";
 import cookieParser from "cookie-parser";
 import cors from "cors";
+import helmet from "helmet";
 import { fileURLToPath } from "url";
+
+// ✅ IMPORTS AVEC .ts (pour tsx)
+import authRoutes from "./server/src/routes/auth.ts";
+import userRoutes from "./server/src/routes/user.ts";
+import transactionsRoutes from "./server/src/routes/transactions.ts";
+import contactsRoutes from "./server/src/routes/contacts.ts";
+import friendshipRoutes from "./server/src/routes/friendship.ts";
+import schedulerRoutes from "./server/src/routes/scheduler.ts";
+import servicesRoutes from "./server/src/routes/services.ts";
+import promotionsRoutes from "./server/src/routes/promotions.ts";
+import banksRoutes from "./server/src/routes/banks.ts";
+
+// ✅ PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
+import obpKeysRoutes from "./server/src/routes/obpKeys.ts";
+import obpFacadeRoutes from "./server/src/routes/obpFacade.ts";
+
+// ✅ SÉCURITÉ – middlewares de protection
+import {
+  globalLimiter,
+  authLimiter,
+  otpLimiter,
+  pinLimiter,
+  fundsLimiter,
+  apiKeyLimiter,
+  obpLimiter,
+} from "./server/src/middleware/rateLimit.ts";
+import { errorHandler } from "./server/src/middleware.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// BACKGROUND INITIALIZATION
 async function initializeApp() {
   console.log(">>> [STARTUP] Beginning background initialization...");
 
@@ -24,6 +51,9 @@ async function initializeApp() {
           "http://localhost:3000/api/v1/scheduler/trigger-reminders",
           {
             method: "POST",
+            headers: {
+              "x-cron-secret": process.env.CRON_SECRET || "",
+            },
           },
         );
       } catch (e) {
@@ -33,15 +63,37 @@ async function initializeApp() {
   }
 
   // Middleware
+  // Ne fie au header X-Forwarded-For que derrière un proxy de confiance
+  // (production) ou si TRUST_PROXY est explicitement activé. En dev/test,
+  // le spoofing X-Forwarded-For ne permet pas de contourner les rate limiters IP.
+  const trustProxyEnabled =
+    process.env.TRUST_PROXY === "1" || process.env.NODE_ENV === "production";
+  if (trustProxyEnabled) app.set("trust proxy", 1);
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: false,
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+          scriptSrc: ["'self'", "https://unpkg.com"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "https://unpkg.com"],
+        },
+      },
+    }),
+  );
   app.use(express.json({ limit: "10mb" }));
   app.use(express.urlencoded({ limit: "10mb", extended: true }));
   app.use(cookieParser());
 
-  const allowedOrigins = [
+  // CORS
+  const allowedOrigins: (string | RegExp)[] = [
     "http://localhost:5173",
     "http://localhost:4173",
     "http://localhost:3000",
     "http://192.168.15.2:5173",
+    "http://192.168.15.4:5173",
     "http://192.168.15.2:3000",
     process.env.FRONTEND_URL || "",
     "capacitor://localhost",
@@ -53,13 +105,9 @@ async function initializeApp() {
     "https://pi-yes-frontend-beta-001.vercel.app",
     "https://piyes-wallet.vercel.app",
     "https://piyes-frontend.vercel.app",
-    /^https:\/\/.*\.vercel\.app$/,
   ].filter(Boolean);
 
-  // Supprime complètement la partie avec localIp (plus besoin)
-
-  // Ajouter dynamiquement l'IP locale (pour éviter de la fixer en dur)
-  const localIp = "192.168.15.4"; // ← idéalement, rendre ça automatique
+  const localIp = "192.168.15.4";
   if (localIp && localIp.startsWith("192.168.")) {
     allowedOrigins.push(`http://${localIp}:5173`);
     allowedOrigins.push(`http://${localIp}:3000`);
@@ -68,18 +116,12 @@ async function initializeApp() {
   app.use(
     cors({
       origin: (origin, callback) => {
-        // Permettre les requêtes sans origin (ex: apps mobiles, curl)
         if (!origin) return callback(null, true);
-
-        // Vérifier si l'origine est autorisée (string exacte OU regex)
         const isAllowed = allowedOrigins.some((allowed) => {
           if (typeof allowed === "string") return allowed === origin;
           if (allowed instanceof RegExp) return allowed.test(origin);
           return false;
         });
-
-        console.log(`[CORS] Origin: ${origin} - Allowed: ${isAllowed}`); // Log pour debug
-
         if (isAllowed) {
           callback(null, true);
         } else {
@@ -89,17 +131,22 @@ async function initializeApp() {
       },
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",
+        "x-admin-secret",
+      ],
       optionsSuccessStatus: 200,
     }),
   );
+
   // Health Checks
   app.get("/healthz", (req, res) => res.status(200).send("OK"));
   app.get("/api/health", (req, res) =>
     res.json({ status: "ok", timestamp: new Date().toISOString() }),
   );
 
-  // Route de debug pour tester la connexion
   app.get("/api/v1/ping", (req, res) => {
     res.json({
       message: "pong",
@@ -108,48 +155,59 @@ async function initializeApp() {
     });
   });
 
-  // API Routes - Imports avec extension .js pour compatibilité Vercel
+  // ============================================================
+  // ROUTES API V1 (prefix /api/v1)
+  // ============================================================
   const apiV1 = express.Router();
 
-  apiV1.use("/auth", (await import("./server/src/routes/auth.js")).default);
-  apiV1.use("/user", (await import("./server/src/routes/user.js")).default);
-  apiV1.use(
-    "/transactions",
-    (await import("./server/src/routes/transactions.js")).default,
-  );
-  apiV1.use(
-    "/contacts",
-    (await import("./server/src/routes/contacts.js")).default,
-  );
-  apiV1.use(
-    "/friendship",
-    (await import("./server/src/routes/friendship.js")).default,
-  );
-  apiV1.use(
-    "/scheduler",
-    (await import("./server/src/routes/scheduler.js")).default,
-  );
-  apiV1.use(
-    "/services",
-    (await import("./server/src/routes/services.js")).default,
-  );
-  apiV1.use(
-    "/promotions",
-    (await import("./server/src/routes/promotions.js")).default,
-  );
-  apiV1.use("/banks", (await import("./server/src/routes/banks.js")).default);
+  // Rate limiting – routes sensibles (avant montage des routes)
+  apiV1.use("/auth/login", authLimiter);
+  apiV1.use("/auth/forgot-password", authLimiter);
+  apiV1.use("/auth/reset-password", authLimiter);
+  apiV1.use("/auth/otp", otpLimiter);
+  apiV1.use("/auth/verify-session-otp", otpLimiter);
+  apiV1.use("/user/pin/verify", pinLimiter);
+  apiV1.use("/transactions", fundsLimiter);
 
-  // Route de test directe
-  app.get("/api/v1/test", (req, res) => {
-    res.json({ message: "Test route works!" });
-  });
+  apiV1.use("/auth", authRoutes);
+  apiV1.use("/user", userRoutes);
+  apiV1.use("/transactions", transactionsRoutes);
+  apiV1.use("/contacts", contactsRoutes);
+  apiV1.use("/friendship", friendshipRoutes);
+  apiV1.use("/scheduler", schedulerRoutes);
+  apiV1.use("/services", servicesRoutes);
+  apiV1.use("/promotions", promotionsRoutes);
+  apiV1.use("/banks", banksRoutes);
 
-  app.use("/api/v1", apiV1);
-  console.log(">>> [STARTUP] API routes mounted.");
+  app.use("/api/v1", globalLimiter, apiV1);
+  console.log(">>> [STARTUP] API routes mounted at /api/v1");
 
-  // Fallback 404
+  // ============================================================
+  // PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
+  // ============================================================
+  app.use("/obp/v3.1.0/keys", apiKeyLimiter, obpKeysRoutes);
+  app.use("/obp/v3.1.0", obpLimiter, obpFacadeRoutes);
+  console.log(">>> [STARTUP] OBP routes mounted at /obp/v3.1.0");
+
+  // ============================================================
+  // SWAGGER UI
+  // ============================================================
+  app.use(
+    "/api-docs",
+    (await import("./server/src/routes/swagger.js")).default,
+  );
+  console.log(">>> [STARTUP] Swagger UI mounted at /api-docs");
+
+  // ============================================================
+  // ERROR HANDLER (après toutes les routes)
+  // ============================================================
+  app.use(errorHandler);
+
+  // ============================================================
+  // FALLBACK 404
+  // ============================================================
   app.use((req, res) => {
-    if (req.url.startsWith("/api")) {
+    if (req.url.startsWith("/api") || req.url.startsWith("/obp")) {
       return res.status(404).json({
         error: { message: `Route ${req.url} not found`, code: "NOT_FOUND" },
       });
@@ -170,18 +228,13 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason, promise) => {
-  console.error(
-    "!!! [CRASH] Unhandled Rejection at:",
-    promise,
-    "reason:",
-    reason,
-  );
+  console.error("!!! [CRASH] Unhandled Rejection:", reason);
 });
 
-// ✅ Export pour Vercel
+// Export pour Vercel
 export default app;
 
-// ✅ Démarrage local uniquement
+// Démarrage local
 if (process.env.NODE_ENV !== "production") {
   const PORT = parseInt(process.env.PORT || "3000", 10);
   app.listen(PORT, "0.0.0.0", () => {

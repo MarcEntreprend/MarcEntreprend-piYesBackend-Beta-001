@@ -255,12 +255,11 @@ router.delete("/:id", authMiddleware, async (req: AuthRequest, res) => {
         .json({ error: "Cannot delete the primary piYès account" });
     }
 
-    // SOFT DELETE: Mark as inactive and set balance to 0
+    // SOFT DELETE: Mark as inactive, keep balance intact
     const { error } = await supabase
       .from("Account")
       .update({
         status: "inactive",
-        balance: 0,
         updatedAt: new Date().toISOString(),
       })
       .eq("id", id)

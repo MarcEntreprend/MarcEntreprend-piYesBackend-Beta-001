@@ -18,6 +18,15 @@ import {
   computeTotalFees,
   computeSimulatedMoncashFees,
 } from "../services/feeTransaction.js";
+import { verifyPin } from "../services/pinService.js";
+import {
+  getIdempotencyKey,
+  getMonCashPrefundedAccountId,
+  getOrCreateCustomerLedgerAccount,
+  getSystemCashAccountId,
+  ledgerErrorResponse,
+  postOrder,
+} from "../services/ledgerService.ts";
 
 const router = express.Router();
 
@@ -82,7 +91,46 @@ async function ensurePiyesAccount(
     throw new Error("Impossible de créer le compte piYès du destinataire");
   }
 
+  // 🔥 NOUVEAU : Créer le ledger account associé
+  const { data: userData } = await supabase
+    .from("User")
+    .select("name, balance")
+    .eq("id", userId)
+    .single();
+
+  if (userData) {
+    const { error: ledgerError } = await supabase.rpc(
+      "piyes_ledger_get_or_create_customer_account",
+      {
+        p_customer_user_id: userId,
+        p_name: userData.name || "Client",
+        p_piyes_account_id: newAccountId,
+        p_piyes_user_id: userId,
+        p_initial_balance_cents: userData.balance || 0,
+      },
+    );
+    if (ledgerError) {
+      console.error(
+        "[LEDGER] ensurePiyesAccount ledger creation error:",
+        ledgerError,
+      );
+    }
+  }
+
   return newAccountId;
+}
+
+// Helper : résout le compte ledger d'un client (création + seed du solde si absent)
+async function resolveLedgerForUser(
+  user: any,
+  accountId: string | null,
+): Promise<string> {
+  return getOrCreateCustomerLedgerAccount(user.id, {
+    name: user.name || "Client",
+    piyesAccountId: accountId || undefined,
+    piyesUserId: user.id,
+    initialBalanceCents: user.balance || 0,
+  });
 }
 
 // 1. TRANSFER
@@ -103,7 +151,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
 
     if (senderError || !sender) throw new Error("User not found");
 
-    console.log(`[TEST MODE] PIN bypass for user ${sender.id}`);
+    await verifyPin(sender.pinHash, validated.pin);
 
     if (sender.balance < amountCents) {
       throw new Error("Insufficient balance");
@@ -180,13 +228,79 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       description = "";
     }
 
+    // === LEDGER : journal en partie double (atomique + idempotent) ===
+    const senderLedgerId = await resolveLedgerForUser(sender, accountId);
+    const receiverLedgerId = await resolveLedgerForUser(
+      receiver,
+      receiverAccountId,
+    );
+
+    const idempotencyKey = getIdempotencyKey(req);
+    const ledgerResult = await postOrder({
+      idempotencyKey,
+      type: "TRANSFER",
+      customerUserId: sender.id,
+      amountCents,
+      debitAccountId: senderLedgerId,
+      creditAccountId: receiverLedgerId,
+      description: description || `Transfert vers ${receiver.name}`,
+      externalRef: idempotencyKey,
+    });
+
+    if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+      return res.status(400).json({
+        error: {
+          message: "Transaction refusée : ordre précédent non réglé",
+          code: "INSUFFICIENT_BALANCE",
+        },
+      });
+    }
+
+    const senderBalanceAfter = ledgerResult.debitBalance!;
+    const senderBalanceBefore = senderBalanceAfter + amountCents;
+    const receiverBalanceAfter = ledgerResult.creditBalance!;
+    const receiverBalanceBefore = receiverBalanceAfter - amountCents;
+
+    // Sur replay SETTLED : renvoyer la transaction déjà créée si présente
+    if (ledgerResult.replay) {
+      const { data: existingTx } = await supabase
+        .from("Transaction")
+        .select("*")
+        .eq("payment_order_id", ledgerResult.paymentOrderId)
+        .eq("role", TransactionRole.PAYER)
+        .maybeSingle();
+      if (existingTx) {
+        const { data: senderLedgerBalance } = await supabase
+          .from("ledger_account_balance")
+          .select("balance_cents")
+          .eq("ledger_account_id", senderLedgerId)
+          .single();
+        const { data: receiverLedgerBalance } = await supabase
+          .from("ledger_account_balance")
+          .select("balance_cents")
+          .eq("ledger_account_id", receiverLedgerId)
+          .single();
+        const nameParts = receiver.name.trim().split(/\s+/);
+        const recipientInitials =
+          nameParts.length > 1
+            ? (
+                nameParts[0][0] + nameParts[nameParts.length - 1][0]
+              ).toUpperCase()
+            : nameParts[0].substring(0, 2).toUpperCase();
+        return res.json({
+          ...existingTx,
+          recipientId: receiver.id,
+          recipientName: receiver.name,
+          recipientAvatarUrl: receiver.avatarUrl,
+          recipientInitials,
+          senderBalance: (senderLedgerBalance?.balance_cents ?? 0) / 100,
+          receiverBalance: (receiverLedgerBalance?.balance_cents ?? 0) / 100,
+        });
+      }
+    }
+
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
-
-    // --- Calcul des soldes avant/après pour le PAYEUR ---
-    const senderBalanceBefore = sender.balance; // en centimes
-    const senderNewBalance = sender.balance - amountCents;
-    const senderBalanceAfter = senderNewBalance;
 
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
@@ -201,6 +315,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         accountId: accountId,
         external_id: txCode,
         auth_code: authCode,
+        payment_order_id: ledgerResult.paymentOrderId,
         date: new Date().toISOString(),
         balance_before: senderBalanceBefore,
         balance_after: senderBalanceAfter,
@@ -209,11 +324,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       .single();
 
     if (txError) throw txError;
-
-    // --- Calcul des soldes avant/après pour le RECEVEUR ---
-    const receiverBalanceBefore = receiver.balance; // en centimes
-    const receiverNewBalance = receiver.balance + amountCents;
-    const receiverBalanceAfter = receiverNewBalance;
 
     const receiverTxId = generateId();
     const { error: receiverInsertError } = await supabase
@@ -229,6 +339,7 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         accountId: receiverAccountId,
         external_id: txCode,
         auth_code: authCode,
+        payment_order_id: ledgerResult.paymentOrderId,
         date: new Date().toISOString(),
         balance_before: receiverBalanceBefore,
         balance_after: receiverBalanceAfter,
@@ -245,33 +356,6 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
         "Échec de l’enregistrement de la transaction pour le destinataire",
       );
     }
-
-    // Update balances (même code qu'avant)
-    await supabase
-      .from("User")
-      .update({
-        balance: senderNewBalance,
-        updatedAt: new Date().toISOString(),
-      })
-      .eq("id", sender.id);
-    await supabase
-      .from("Account")
-      .update({ balance: senderNewBalance })
-      .eq("userId", sender.id)
-      .eq("provider", "piyes");
-
-    await supabase
-      .from("User")
-      .update({
-        balance: receiverNewBalance,
-        updatedAt: new Date().toISOString(),
-      })
-      .eq("id", receiver.id);
-    await supabase
-      .from("Account")
-      .update({ balance: receiverNewBalance })
-      .eq("userId", receiver.id)
-      .eq("provider", "piyes");
 
     // Notifications (inchangées)
     await supabase.from("Notification").insert({
@@ -412,6 +496,25 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
+    // Récupérer les soldes à jour depuis le ledger pour la réponse
+    const { data: senderLedgerBalance } = await supabase
+      .from("ledger_account_balance")
+      .select("balance_cents")
+      .eq("ledger_account_id", senderLedgerId)
+      .single();
+
+    const { data: receiverLedgerBalance } = await supabase
+      .from("ledger_account_balance")
+      .select("balance_cents")
+      .eq("ledger_account_id", receiverLedgerId)
+      .single();
+
+    const senderBalanceForResponse =
+      senderLedgerBalance?.balance_cents ?? senderBalanceAfter;
+    const receiverBalanceForResponse =
+      receiverLedgerBalance?.balance_cents ?? receiverBalanceAfter;
+
+    // Calcul des initiales du destinataire (déplacé ici pour être accessible)
     const nameParts = receiver.name.trim().split(/\s+/);
     const recipientInitials =
       nameParts.length > 1
@@ -424,12 +527,13 @@ router.post("/transfer", authMiddleware, async (req: AuthRequest, res) => {
       recipientName: receiver.name,
       recipientAvatarUrl: receiver.avatarUrl,
       recipientInitials,
+      senderBalance: senderBalanceForResponse / 100,
+      receiverBalance: receiverBalanceForResponse / 100,
     });
   } catch (error: any) {
     console.error("Transfer error:", error);
-    res
-      .status(400)
-      .json({ error: { message: error.message || "Transfer failed" } });
+    const mapped = ledgerErrorResponse(error);
+    res.status(mapped.status).json(mapped.body);
   }
 });
 
@@ -465,8 +569,73 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
       .eq("id", userId)
       .single();
     if (!user) throw new Error("Utilisateur introuvable");
-    console.log(`[TEST MODE] PIN bypass for recharge user ${userId}`);
+    await verifyPin(user.pinHash, validated.pin);
 
+    // === LEDGER : si le compte de débit est le portefeuille piYès ===
+    if (account.provider === "piyes") {
+      const ledgerId = await resolveLedgerForUser(user, account.id);
+      const systemCashId = await getSystemCashAccountId();
+      const idempotencyKey = getIdempotencyKey(req);
+      const ledgerResult = await postOrder({
+        idempotencyKey,
+        type: "RECHARGE",
+        customerUserId: userId,
+        amountCents,
+        debitAccountId: ledgerId,
+        creditAccountId: systemCashId,
+        description: `Recharge ${validated.operatorId} pour ${validated.phoneNumber}`,
+        externalRef: idempotencyKey,
+      });
+
+      if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+        return res.status(400).json({
+          error: {
+            message: "Transaction refusée : ordre précédent non réglé",
+            code: "INSUFFICIENT_BALANCE",
+          },
+        });
+      }
+
+      if (ledgerResult.replay) {
+        const { data: existing } = await supabase
+          .from("Transaction")
+          .select("*")
+          .eq("payment_order_id", ledgerResult.paymentOrderId)
+          .eq("role", TransactionRole.PAYER)
+          .maybeSingle();
+        if (existing) return res.json(existing);
+      }
+
+      const balanceAfter = ledgerResult.debitBalance!;
+      const balanceBefore = balanceAfter + amountCents;
+      const txCode = generateTxCode();
+      const authCode = generateAuthCode();
+
+      const { data: transaction, error: txError } = await supabase
+        .from("Transaction")
+        .insert({
+          id: generateId(),
+          type: TransactionType.RECHARGE,
+          amount: amountCents,
+          description: `Recharge ${validated.operatorId} pour ${validated.phoneNumber}`,
+          role: TransactionRole.PAYER,
+          counterpartyName: validated.operatorId,
+          userId: userId,
+          accountId: account.id,
+          external_id: txCode,
+          auth_code: authCode,
+          payment_order_id: ledgerResult.paymentOrderId,
+          date: new Date().toISOString(),
+          balance_before: balanceBefore,
+          balance_after: balanceAfter,
+        })
+        .select()
+        .single();
+      if (txError) throw txError;
+      return res.json(transaction);
+    }
+
+    // Legacy : comptes externes (non piYès) — hors ledger
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
@@ -502,18 +671,10 @@ router.post("/recharge", authMiddleware, async (req: AuthRequest, res) => {
       .update({ balance: newAccountBalance })
       .eq("id", account.id);
 
-    if (account.provider === "piyes") {
-      await supabase
-        .from("User")
-        .update({ balance: newAccountBalance })
-        .eq("id", userId);
-    }
-
     res.json(transaction);
   } catch (error: any) {
-    res
-      .status(400)
-      .json({ error: { message: error.message || "Recharge failed" } });
+    const mapped = ledgerErrorResponse(error);
+    res.status(mapped.status).json(mapped.body);
   }
 });
 
@@ -526,15 +687,14 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
     const validated = depositWithdrawSchema.parse(req.body);
     const amountCents = Math.round(validated.amount * 100);
 
-    // Récupérer l'utilisateur et son solde actuel (en centimes)
+    // Récupérer TOUT l'utilisateur (pas seulement balance)
     const { data: user, error: userError } = await supabase
       .from("User")
-      .select("balance")
+      .select("*")
       .eq("id", userId)
       .single();
-    if (userError || !user) throw new Error("User not found");
 
-    const currentBalanceCents = user.balance; // déjà en centimes
+    if (userError || !user) throw new Error("User not found");
 
     const { data: userAccount } = await supabase
       .from("Account")
@@ -542,9 +702,10 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       .eq("userId", userId)
       .eq("provider", "piyes")
       .single();
+
     const accountId = userAccount?.id || "piyes-main";
 
-    // MonCash logic (unchanged)
+    // MonCash logic (inchangé)
     if (validated.accountId) {
       const { data: sourceAccount } = await supabase
         .from("Account")
@@ -557,25 +718,33 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
           const { moncashService } =
             await import("../services/moncashService.js");
           const orderId = generateId();
-          const redirectUrl = await moncashService.createPayment(
+          const payment = await moncashService.createPayment(
             validated.amount,
             orderId,
           );
-          await supabase.from("Transaction").insert({
-            id: orderId,
-            type: TransactionType.DEPOSIT,
-            amount: amountCents,
-            description: "Dépôt MonCash (En attente)",
-            role: TransactionRole.RECEIVER,
-            counterpartyName: "MonCash",
-            userId: userId,
-            accountId: accountId,
-            status: "PENDING",
-            date: new Date().toISOString(),
-            balance_before: currentBalanceCents, // solde avant
-            balance_after: currentBalanceCents, // pas encore effectué
+          const { error: pendingError } = await supabase
+            .from("Transaction")
+            .insert({
+              id: orderId,
+              type: TransactionType.DEPOSIT,
+              amount: amountCents,
+              description: "Dépôt MonCash (En attente)",
+              role: TransactionRole.RECEIVER,
+              counterpartyName: "MonCash",
+              userId: userId,
+              accountId: accountId,
+              status: "PENDING",
+              date: new Date().toISOString(),
+              balance_before: user.balance,
+              balance_after: user.balance,
+            });
+          if (pendingError) throw pendingError;
+          return res.json({
+            redirectUrl: payment.redirectUrl,
+            paymentToken: payment.token,
+            mode: payment.mode,
+            orderId,
           });
-          return res.json({ redirectUrl, orderId });
         } catch (error: any) {
           return res.status(400).json({
             error: {
@@ -586,8 +755,58 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
       }
     }
 
-    // Dépôt standard
-    const newBalanceCents = currentBalanceCents + amountCents;
+    // ✅ Utiliser ledgerService au lieu de l'appel direct
+    // En production, ce chemin « money creation » (crédit depuis la caisse
+    // système) exige un secret admin : aucun utilisateur ne peut s'auto-créditer.
+    if (process.env.NODE_ENV === "production") {
+      const adminSecret = process.env.MONCASH_ADMIN_SECRET;
+      if (!adminSecret || req.headers["x-admin-secret"] !== adminSecret) {
+        return res.status(403).json({
+          error: { message: "Forbidden", code: "FORBIDDEN" },
+        });
+      }
+    }
+    const systemCashId = await getSystemCashAccountId();
+    const ledgerId = await getOrCreateCustomerLedgerAccount(user.id, {
+      name: user.name,
+      piyesAccountId: accountId,
+      piyesUserId: user.id,
+      initialBalanceCents: user.balance,
+    });
+
+    const idempotencyKey = getIdempotencyKey(req);
+    const ledgerResult = await postOrder({
+      idempotencyKey,
+      type: "DEPOSIT",
+      customerUserId: userId,
+      amountCents,
+      debitAccountId: systemCashId,
+      creditAccountId: ledgerId,
+      description: "Dépôt sur compte",
+      externalRef: idempotencyKey,
+    });
+
+    if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+      return res.status(400).json({
+        error: {
+          message: "Transaction refusée : ordre précédent non réglé",
+          code: "INSUFFICIENT_BALANCE",
+        },
+      });
+    }
+
+    if (ledgerResult.replay) {
+      const { data: existing } = await supabase
+        .from("Transaction")
+        .select("*")
+        .eq("payment_order_id", ledgerResult.paymentOrderId)
+        .eq("role", TransactionRole.RECEIVER)
+        .maybeSingle();
+      if (existing) return res.json(existing);
+    }
+
+    const balanceAfter = ledgerResult.creditBalance!;
+    const balanceBefore = balanceAfter - amountCents;
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
@@ -604,24 +823,15 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
         accountId: accountId,
         external_id: txCode,
         auth_code: authCode,
+        payment_order_id: ledgerResult.paymentOrderId,
         date: new Date().toISOString(),
-        balance_before: currentBalanceCents,
-        balance_after: newBalanceCents,
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
       })
       .select()
       .single();
-    if (txError) throw txError;
 
-    // Mettre à jour le solde utilisateur
-    await supabase
-      .from("User")
-      .update({ balance: newBalanceCents })
-      .eq("id", userId);
-    await supabase
-      .from("Account")
-      .update({ balance: newBalanceCents })
-      .eq("userId", userId)
-      .eq("provider", "piyes");
+    if (txError) throw txError;
 
     // Notification
     await supabase.from("Notification").insert({
@@ -640,9 +850,8 @@ router.post("/deposit", authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(transaction);
   } catch (error: any) {
-    res
-      .status(400)
-      .json({ error: { message: error.message || "Deposit failed" } });
+    const mapped = ledgerErrorResponse(error);
+    res.status(mapped.status).json(mapped.body);
   }
 });
 
@@ -674,16 +883,182 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       .maybeSingle();
     const accountId = userAccount?.id || "piyes-main";
 
-    // Balance before (current balance in cents)
-    const balanceBefore = user.balance;
-    // Impact: negative for withdrawal
-    const impact = -amountCents;
-    const balanceAfter = balanceBefore + impact;
+    // === MonCash payout : la cible est un compte MonCash lié ===
+    const { data: targetAccount } = await supabase
+      .from("Account")
+      .select("*")
+      .eq("id", validated.accountId)
+      .eq("userId", userId)
+      .maybeSingle();
 
+    if (targetAccount?.provider === "moncash") {
+      const { moncashService } = await import("../services/moncashService.js");
+      const reference = getIdempotencyKey(req);
+
+      // 1. PIN obligatoire pour un retrait sortant
+      if (!validated.pin) throw new Error("PIN requis");
+      await verifyPin(user.pinHash, validated.pin);
+
+      // 2. Éligibilité KYC du bénéficiaire MonCash
+      const accountNumber = targetAccount.accountNumber;
+      if (!accountNumber) throw new Error("Compte MonCash sans numéro");
+      const customerStatus =
+        await moncashService.getCustomerStatus(accountNumber);
+      const eligible =
+        customerStatus.type === "fullkyc" &&
+        Array.isArray(customerStatus.status) &&
+        customerStatus.status.includes("active");
+      if (!eligible) {
+        return res.status(400).json({
+          error: {
+            message: "Le compte MonCash bénéficiaire n'est pas éligible",
+            code: "MONCASH_CUSTOMER_INELIGIBLE",
+            customerStatus,
+          },
+        });
+      }
+
+      // 3. Solde préfondé MonCash suffisant
+      const prefunded = await moncashService.getPrefundedBalance();
+      if (prefunded.balance * 100 < amountCents) {
+        return res.status(400).json({
+          error: {
+            message: "Fonds préfondés MonCash insuffisants",
+            code: "MONCASH_PREFUNDED_INSUFFICIENT",
+          },
+        });
+      }
+
+      // 4. Payout MonCash (Transfert)
+      const transfer = await moncashService.transfer(
+        validated.amount,
+        accountNumber,
+        reference,
+      );
+
+      // 5. Ledger : retrait = débit client / crédit préfondé MonCash (1002)
+      const prefundedLedgerId = await getMonCashPrefundedAccountId();
+      const ledgerId = await resolveLedgerForUser(user, accountId);
+      const ledgerResult = await postOrder({
+        idempotencyKey: `moncash-payout:${reference}`,
+        type: "WITHDRAW",
+        customerUserId: userId,
+        amountCents,
+        debitAccountId: ledgerId,
+        creditAccountId: prefundedLedgerId,
+        description: "Retrait vers MonCash",
+        externalRef: reference,
+      });
+
+      if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+        return res.status(400).json({
+          error: {
+            message: "Transaction refusée : ordre précédent non réglé",
+            code: "INSUFFICIENT_BALANCE",
+          },
+        });
+      }
+
+      if (ledgerResult.replay) {
+        const { data: existing } = await supabase
+          .from("Transaction")
+          .select("*")
+          .eq("payment_order_id", ledgerResult.paymentOrderId)
+          .eq("role", TransactionRole.PAYER)
+          .maybeSingle();
+        if (existing) return res.json(existing);
+      }
+
+      const balanceAfter = ledgerResult.debitBalance!;
+      const balanceBefore = balanceAfter + amountCents;
+      const txCode = generateTxCode();
+      const authCode = generateAuthCode();
+
+      const { data: transaction, error: txError } = await supabase
+        .from("Transaction")
+        .insert({
+          id: generateId(),
+          type: TransactionType.WITHDRAW,
+          amount: amountCents,
+          description: "Retrait vers MonCash",
+          role: TransactionRole.PAYER,
+          counterpartyName: "MonCash",
+          userId: userId,
+          accountId: accountId,
+          external_id: txCode,
+          auth_code: authCode,
+          payment_order_id: ledgerResult.paymentOrderId,
+          moncashTransactionId: transfer.transaction_id,
+          moncashReference: reference,
+          date: new Date().toISOString(),
+          balance_before: balanceBefore,
+          balance_after: balanceAfter,
+        })
+        .select()
+        .single();
+      if (txError) throw txError;
+
+      await supabase.from("Notification").insert({
+        id: generateId(),
+        userId: userId,
+        type: "withdraw_success",
+        title: "withdraw_success",
+        body: "withdraw_success.body",
+        amount: validated.amount.toString(),
+        data: { name: "MonCash", amount: validated.amount },
+        isRead: false,
+        targetId: transaction.id,
+        route: "/history",
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json(transaction);
+    }
+
+    // === Retrait interne piYès ===
+    // PIN obligatoire : sortie d'argent (même exigence que le retrait MonCash)
+    if (!validated.pin) throw new Error("PIN requis");
+    await verifyPin(user.pinHash, validated.pin);
+
+    // === LEDGER : retrait = débit client / crédit caisse piYès ===
+    const systemCashId = await getSystemCashAccountId();
+    const ledgerId = await resolveLedgerForUser(user, accountId);
+    const idempotencyKey = getIdempotencyKey(req);
+    const ledgerResult = await postOrder({
+      idempotencyKey,
+      type: "WITHDRAW",
+      customerUserId: userId,
+      amountCents,
+      debitAccountId: ledgerId,
+      creditAccountId: systemCashId,
+      description: "Retrait de fonds",
+      externalRef: idempotencyKey,
+    });
+
+    if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+      return res.status(400).json({
+        error: {
+          message: "Transaction refusée : ordre précédent non réglé",
+          code: "INSUFFICIENT_BALANCE",
+        },
+      });
+    }
+
+    if (ledgerResult.replay) {
+      const { data: existing } = await supabase
+        .from("Transaction")
+        .select("*")
+        .eq("payment_order_id", ledgerResult.paymentOrderId)
+        .eq("role", TransactionRole.PAYER)
+        .maybeSingle();
+      if (existing) return res.json(existing);
+    }
+
+    const balanceAfter = ledgerResult.debitBalance!;
+    const balanceBefore = balanceAfter + amountCents;
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
-    // Insert transaction with balance_before and balance_after
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
       .insert({
@@ -697,6 +1072,7 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
         accountId: accountId,
         external_id: txCode,
         auth_code: authCode,
+        payment_order_id: ledgerResult.paymentOrderId,
         date: new Date().toISOString(),
         balance_before: balanceBefore,
         balance_after: balanceAfter,
@@ -704,18 +1080,6 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
       .select()
       .single();
     if (txError) throw txError;
-
-    // Update user balance (in cents)
-    const newBalance = balanceAfter;
-    await supabase
-      .from("User")
-      .update({ balance: newBalance, updatedAt: new Date().toISOString() })
-      .eq("id", userId);
-    await supabase
-      .from("Account")
-      .update({ balance: newBalance })
-      .eq("userId", userId)
-      .eq("provider", "piyes");
 
     // Create notification
     await supabase.from("Notification").insert({
@@ -735,9 +1099,8 @@ router.post("/withdraw", authMiddleware, async (req: AuthRequest, res) => {
     res.json(transaction);
   } catch (error: any) {
     console.error("Withdraw error:", error);
-    res
-      .status(400)
-      .json({ error: { message: error.message || "Withdraw failed" } });
+    const mapped = ledgerErrorResponse(error);
+    res.status(mapped.status).json(mapped.body);
   }
 });
 
@@ -836,7 +1199,55 @@ router.post("/schedule", authMiddleware, async (req: AuthRequest, res) => {
 });
 
 // 7. QR SCAN / PAY (avec balance_before / balance_after)
-router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
+// 7bis. GENERATE QR (Phase 2 — P2P) : QR de paiement avec montant optionnel
+router.post("/generate-qr", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { amount, description, expiresInMinutes } = req.body;
+
+    const { data: user } = await supabase
+      .from("User")
+      .select("id, name, tag, phone, email, avatarUrl")
+      .eq("id", userId)
+      .single();
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const qrPayload: any = {
+      id: user.id,
+      name: user.name,
+      tag: user.tag,
+      phone: user.phone,
+      email: user.email,
+      avatarUrl: user.avatarUrl
+        ? `${user.avatarUrl}${user.avatarUrl.includes("?") ? "&" : "?"}t=${Date.now()}`
+        : null,
+    };
+
+    // Si un montant est fourni → QR de paiement (montant pré-rempli + expiration)
+    if (amount !== undefined && amount !== null) {
+      const amountNum = Number(amount);
+      if (isNaN(amountNum) || amountNum <= 0) {
+        return res.status(400).json({
+          error: { message: "Amount invalide", code: "INVALID_AMOUNT" },
+        });
+      }
+      qrPayload.amount = amountNum; // HTG (décimal) — scan-qr convertit en centimes
+      if (description) qrPayload.description = description;
+      const ttlMin = expiresInMinutes ? Number(expiresInMinutes) : 5;
+      qrPayload.expiry = Date.now() + ttlMin * 60 * 1000;
+    }
+
+    res.json({ qrData: JSON.stringify(qrPayload) });
+  } catch (error) {
+    console.error("generate-qr error:", error);
+    res.status(500).json({ error: "Failed to generate QR data" });
+  }
+});
+
+// 7. SCAN QR (paiement) — handler partagé avec /scan-qr (Phase 2)
+const scanQrHandler = async (req: AuthRequest, res: any) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -861,7 +1272,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .eq("id", userId)
       .single();
     if (!sender) throw new Error("User not found");
-    console.log(`[TEST MODE] PIN bypass for user ${sender.id}`);
+    await verifyPin(sender.pinHash, req.body.pin);
     if (sender.balance < amountCents) throw new Error("Insufficient balance");
 
     let receiver = null;
@@ -899,9 +1310,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
     }
     if (!receiver) throw new Error("Receiver not found");
 
-    const newSenderBalance = sender.balance - amountCents;
-    const newReceiverBalance = receiver.balance + amountCents;
-
     const { data: senderAccount } = await supabase
       .from("Account")
       .select("id")
@@ -927,15 +1335,55 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     const receiverAccountId = receiverAccount?.id || "piyes-main";
 
+    // === LEDGER : paiement QR = débit payeur / crédit receveur ===
+    const senderLedgerId = await resolveLedgerForUser(sender, accountId);
+    const receiverLedgerId = await resolveLedgerForUser(
+      receiver,
+      receiverAccountId,
+    );
+
+    const idempotencyKey = getIdempotencyKey(req);
+    const ledgerResult = await postOrder({
+      idempotencyKey,
+      type: "TRANSFER",
+      customerUserId: sender.id,
+      amountCents,
+      debitAccountId: senderLedgerId,
+      creditAccountId: receiverLedgerId,
+      description: description || "Paiement par QR Code",
+      externalRef: idempotencyKey,
+    });
+
+    if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+      return res.status(400).json({
+        error: {
+          message: "Transaction refusée : ordre précédent non réglé",
+          code: "INSUFFICIENT_BALANCE",
+        },
+      });
+    }
+
+    const senderBalanceAfter = ledgerResult.debitBalance!;
+    const senderBalanceBefore = senderBalanceAfter + amountCents;
+    const receiverBalanceAfter = ledgerResult.creditBalance!;
+    const receiverBalanceBefore = receiverBalanceAfter - amountCents;
+
+    let transaction: any;
+    if (ledgerResult.replay) {
+      const { data: existing } = await supabase
+        .from("Transaction")
+        .select("*")
+        .eq("payment_order_id", ledgerResult.paymentOrderId)
+        .eq("role", TransactionRole.PAYER)
+        .maybeSingle();
+      if (existing) return res.json(existing);
+    }
+
     const txCode = generateTxCode();
     const authCode = generateAuthCode();
 
-    // Solde avant pour le sender (en centimes)
-    const senderBalanceBefore = sender.balance;
-    const senderImpact = -amountCents;
-
     // Insertion de la transaction PAYER
-    const { data: transaction, error: payerError } = await supabase
+    const { data: payerTx, error: payerError } = await supabase
       .from("Transaction")
       .insert({
         id: generateId(),
@@ -948,9 +1396,10 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
         accountId: accountId,
         external_id: txCode,
         auth_code: authCode,
+        payment_order_id: ledgerResult.paymentOrderId,
         date: new Date().toISOString(),
         balance_before: senderBalanceBefore,
-        balance_after: senderBalanceBefore + senderImpact,
+        balance_after: senderBalanceAfter,
       })
       .select()
       .single();
@@ -959,10 +1408,7 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       console.error("[SCAN] Failed to insert payer transaction:", payerError);
       throw payerError;
     }
-
-    // Solde avant pour le receiver
-    const receiverBalanceBefore = receiver.balance;
-    const receiverImpact = +amountCents;
+    transaction = payerTx;
 
     // Insertion de la transaction RECEIVER
     const { error: receiverError } = await supabase.from("Transaction").insert({
@@ -976,9 +1422,10 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       accountId: receiverAccountId,
       external_id: txCode,
       auth_code: authCode,
+      payment_order_id: ledgerResult.paymentOrderId,
       date: new Date().toISOString(),
       balance_before: receiverBalanceBefore,
-      balance_after: receiverBalanceBefore + receiverImpact,
+      balance_after: receiverBalanceAfter,
     });
 
     if (receiverError) {
@@ -990,27 +1437,6 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
       await supabase.from("Transaction").delete().eq("id", transaction.id);
       throw receiverError;
     }
-
-    // Mise à jour des soldes (users + accounts)
-    await supabase
-      .from("User")
-      .update({ balance: newSenderBalance })
-      .eq("id", sender.id);
-    await supabase
-      .from("Account")
-      .update({ balance: newSenderBalance })
-      .eq("userId", sender.id)
-      .eq("provider", "piyes");
-
-    await supabase
-      .from("User")
-      .update({ balance: newReceiverBalance })
-      .eq("id", receiver.id);
-    await supabase
-      .from("Account")
-      .update({ balance: newReceiverBalance })
-      .eq("userId", receiver.id)
-      .eq("provider", "piyes");
 
     // Notification pour le receiver
     await supabase.from("Notification").insert({
@@ -1062,11 +1488,14 @@ router.post("/scan", authMiddleware, async (req: AuthRequest, res) => {
     res.json(transaction);
   } catch (error: any) {
     console.error("QR scan error:", error);
-    res
-      .status(400)
-      .json({ error: { message: error.message || "QR Payment failed" } });
+    const mapped = ledgerErrorResponse(error);
+    res.status(mapped.status).json(mapped.body);
   }
-});
+};
+
+// Paiement par QR Code (Phase 2 — P2P) : /scan (legacy) + /scan-qr (nouveau)
+router.post("/scan", authMiddleware, scanQrHandler);
+router.post("/scan-qr", authMiddleware, scanQrHandler);
 
 // 8. HISTORY (unchanged)
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
@@ -1081,7 +1510,7 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
       .range(Number(offset), Number(offset) + Number(limit) - 1);
     if (accountId) query = query.eq("accountId", accountId);
     if (counterpartyName)
-      query = query.eq("counterpartyName", counterpartyName);
+      query = query.ilike("counterpartyName", `%${counterpartyName}%`);
     const { data: transactions } = await query;
     res.json(
       (transactions || []).map((tx: any) => ({
@@ -1104,16 +1533,20 @@ const maskAccountNumber = (acc: string) => {
 // 9. RECEIPT (avec balance_before / balance_after)
 router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
   try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
     const { data: tx } = await supabase
       .from("Transaction")
       .select("*")
       .eq("id", req.params.id)
+      .eq("userId", userId)
       .single();
     if (!tx) return res.status(404).json({ error: "Transaction not found" });
 
     const { data: account } = await supabase
       .from("Account")
-      .select("*, user:User(*)")
+      .select("*, user:User(id, name, tag, avatarUrl, accountNumber)")
       .eq("id", tx.accountId)
       .single();
 
@@ -1129,7 +1562,7 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
       if (otherTx) {
         const { data: otherAccount } = await supabase
           .from("Account")
-          .select("*, user:User(*)")
+          .select("*, user:User(id, name, tag, avatarUrl, accountNumber)")
           .eq("id", otherTx.accountId)
           .single();
         if (otherAccount) {
@@ -1196,7 +1629,6 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
         masked_account: senderAccount?.accountNumber
           ? maskAccountNumber(senderAccount.accountNumber)
           : undefined,
-        idNumber: senderUser?.idNumber,
         bank:
           senderAccount?.provider === "piyes"
             ? "piYès"
@@ -1209,7 +1641,6 @@ router.get("/receipts/:id", authMiddleware, async (req: AuthRequest, res) => {
         masked_account: receiverAccount?.accountNumber
           ? maskAccountNumber(receiverAccount.accountNumber)
           : undefined,
-        idNumber: receiverUser?.idNumber,
         bank:
           receiverAccount?.provider === "piyes"
             ? "piYès"
@@ -1304,6 +1735,10 @@ router.post(
         if (user.balance < amountCents) throw new Error("Insufficient balance");
       }
 
+      // PIN obligatoire pour tout mouvement de fonds sortant/entrant
+      if (!validated.pin) throw new Error("PIN requis");
+      await verifyPin(user.pinHash, validated.pin);
+
       const txCode = generateTxCode();
       const authCode = generateAuthCode();
 
@@ -1316,13 +1751,51 @@ router.post(
         ? TransactionRole.RECEIVER
         : TransactionRole.PAYER;
 
-      // Récupérer le solde actuel de l'utilisateur (en centimes)
-      const currentUserBalanceCents = user.balance;
-      let impactUserCents = 0;
-      if (isUserSource) {
-        impactUserCents = -amountCents; // l'utilisateur est source → sortie d'argent
-      } else {
-        impactUserCents = +amountCents; // l'utilisateur est destination → entrée d'argent
+      // === LEDGER : journal en partie double (atomique + idempotent) ===
+      const userLedgerId = await resolveLedgerForUser(
+        user,
+        isUserSource ? sourceAcc.id : destAcc.id,
+      );
+      const systemCashId = await getSystemCashAccountId();
+      const idempotencyKey = getIdempotencyKey(req);
+      const ledgerResult = await postOrder({
+        idempotencyKey,
+        type: isUserSource ? "INTERBANK_OUT" : "INTERBANK_IN",
+        customerUserId: userId,
+        amountCents,
+        debitAccountId: isUserSource ? userLedgerId : systemCashId,
+        creditAccountId: isUserSource ? systemCashId : userLedgerId,
+        description:
+          validated.note ||
+          `Transfert inter-bancaire: ${sourceAcc.label} ↔ ${destAcc.label}`,
+        externalRef: idempotencyKey,
+      });
+
+      if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+        return res.status(400).json({
+          error: {
+            message: "Transaction refusée : ordre précédent non réglé",
+            code: "INSUFFICIENT_BALANCE",
+          },
+        });
+      }
+
+      const balanceAfter = isUserSource
+        ? ledgerResult.debitBalance!
+        : ledgerResult.creditBalance!;
+      const balanceBefore = isUserSource
+        ? balanceAfter + amountCents
+        : balanceAfter - amountCents;
+
+      // Sur replay SETTLED : renvoyer la transaction déjà créée
+      if (ledgerResult.replay) {
+        const { data: existing } = await supabase
+          .from("Transaction")
+          .select("*")
+          .eq("payment_order_id", ledgerResult.paymentOrderId)
+          .eq("role", userRole)
+          .maybeSingle();
+        if (existing) return res.json(existing);
       }
 
       // Transaction pour l'utilisateur (compte piYès)
@@ -1342,9 +1815,10 @@ router.post(
           accountId: isUserSource ? sourceAcc.id : destAcc.id,
           external_id: txCode,
           auth_code: authCode,
+          payment_order_id: ledgerResult.paymentOrderId,
           date: new Date().toISOString(),
-          balance_before: currentUserBalanceCents,
-          balance_after: currentUserBalanceCents + impactUserCents,
+          balance_before: balanceBefore,
+          balance_after: balanceAfter,
         })
         .select()
         .single();
@@ -1382,21 +1856,17 @@ router.post(
           accountId: isUserSource ? destAcc.id : sourceAcc.id,
           external_id: txCode,
           auth_code: authCode,
+          payment_order_id: ledgerResult.paymentOrderId,
           date: new Date().toISOString(),
           balance_before: currentOtherBalanceCents,
           balance_after: currentOtherBalanceCents + impactOtherCents,
         });
       }
 
-      // Mettre à jour les soldes
-      const newUserBalance = currentUserBalanceCents + impactUserCents;
-      await supabase
-        .from("User")
-        .update({ balance: newUserBalance })
-        .eq("id", userId);
+      // Mettre à jour le solde du compte piYès depuis le ledger
       await supabase
         .from("Account")
-        .update({ balance: newUserBalance })
+        .update({ balance: balanceAfter })
         .eq("userId", userId)
         .eq("provider", "piyes");
 
@@ -1410,7 +1880,7 @@ router.post(
   },
 );
 
-// 11. MONCASH CONFIRMATION (unchanged)
+// 11. MONCASH CONFIRMATION
 router.post(
   "/moncash/confirm",
   authMiddleware,
@@ -1419,29 +1889,79 @@ router.post(
       const userId = req.user?.id;
       if (!userId) return res.status(401).json({ error: "Unauthorized" });
       const { transactionId, orderId } = req.body;
-      if (!transactionId)
-        return res.status(400).json({ error: "Missing transactionId" });
+      if (!transactionId && !orderId)
+        return res
+          .status(400)
+          .json({ error: "Missing transactionId or orderId" });
       const { moncashService } = await import("../services/moncashService.js");
-      const result =
-        await moncashService.retrieveTransactionPayment(transactionId);
+
+      const result = transactionId
+        ? await moncashService.retrieveTransactionPayment(transactionId)
+        : await moncashService.retrieveOrderPayment(orderId);
       if (result.payment.message === "successful") {
+        // Lookup idempotent scoped au user : pas de fuite de la transaction d'un autre user
+        const alreadyRecorded = await supabase
+          .from("Transaction")
+          .select("*")
+          .eq("userId", userId)
+          .or(
+            transactionId
+              ? `moncashTransactionId.eq.${transactionId}`
+              : `external_id.eq.${result.payment.reference}`,
+          )
+          .maybeSingle();
+        if (alreadyRecorded.data) return res.json(alreadyRecorded.data);
+
+        // Liaison d'ownership : l'ordre doit correspondre à un dépôt de l'appelant
+        if (orderId) {
+          const { data: ownedTx } = await supabase
+            .from("Transaction")
+            .select("id, userId, status")
+            .eq("id", orderId)
+            .eq("userId", userId)
+            .maybeSingle();
+          if (!ownedTx) {
+            return res.status(403).json({
+              error: {
+                message: "Ordre non lié à ce compte",
+                code: "ORDER_NOT_OWNED",
+              },
+            });
+          }
+          if (ownedTx.status === "COMPLETED") return res.json(ownedTx);
+        }
+
         const amountCents = Math.round(result.payment.cost * 100);
         const { data: user } = await supabase
           .from("User")
-          .select("balance")
+          .select("id, name, balance")
           .eq("id", userId)
           .single();
         if (!user) throw new Error("User not found");
-        const newBalance = user.balance + amountCents;
-        await supabase
-          .from("User")
-          .update({ balance: newBalance })
-          .eq("id", userId);
-        await supabase
+
+        // === LEDGER : dépôt MonCash = crédit client / débit préfondé MonCash (1002) ===
+        const { data: userAccount } = await supabase
           .from("Account")
-          .update({ balance: newBalance })
+          .select("id")
           .eq("userId", userId)
-          .eq("provider", "piyes");
+          .eq("provider", "piyes")
+          .maybeSingle();
+        const accountId = userAccount?.id || "piyes-main";
+        const prefundedLedgerId = await getMonCashPrefundedAccountId();
+        const ledgerId = await resolveLedgerForUser(user, accountId);
+        const ledgerResult = await postOrder({
+          idempotencyKey: `moncash:${transactionId || orderId}`,
+          type: "DEPOSIT",
+          customerUserId: userId,
+          amountCents,
+          debitAccountId: prefundedLedgerId,
+          creditAccountId: ledgerId,
+          description: "Dépôt MonCash",
+          externalRef: `moncash:${transactionId || orderId}`,
+        });
+
+        const balanceAfter = ledgerResult.creditBalance!;
+        const balanceBefore = balanceAfter - amountCents;
         const txCode = generateTxCode();
         const authCode = generateAuthCode();
         let txId = generateId();
@@ -1463,12 +1983,16 @@ router.post(
             role: TransactionRole.RECEIVER,
             counterpartyName: "MonCash",
             userId: userId,
-            accountId: "piyes-main",
+            accountId: accountId,
             external_id: txCode,
             auth_code: authCode,
-            moncashTransactionId: transactionId,
+            moncashTransactionId: transactionId || undefined,
+            moncashReference: result.payment.reference || undefined,
+            payment_order_id: ledgerResult.paymentOrderId,
             status: "COMPLETED",
             date: new Date().toISOString(),
+            balance_before: balanceBefore,
+            balance_after: balanceAfter,
           })
           .select()
           .single();
@@ -1481,9 +2005,77 @@ router.post(
       }
     } catch (error: any) {
       console.error("MonCash confirmation error:", error);
+      const mapped = ledgerErrorResponse(error);
+      res.status(mapped.status).json(mapped.body);
+    }
+  },
+);
+
+// 11bis. MONCASH RETRIEVE BY ORDER ID
+router.post(
+  "/moncash/order-payment",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      const { orderId } = req.body;
+      if (!orderId) return res.status(400).json({ error: "Missing orderId" });
+      const { moncashService } = await import("../services/moncashService.js");
+      const result = await moncashService.retrieveOrderPayment(orderId);
+      return res.json(result);
+    } catch (error: any) {
+      console.error("MonCash order-payment error:", error);
       res
-        .status(400)
-        .json({ error: { message: error.message || "Confirmation failed" } });
+        .status(error?.status || 400)
+        .json({ error: { message: error?.message || "MonCash error" } });
+    }
+  },
+);
+
+// 11ter. MONCASH TRANSFER STATUS (payout)
+router.post(
+  "/moncash/transfer-status",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+      const { reference } = req.body;
+      if (!reference)
+        return res.status(400).json({ error: "Missing reference" });
+      const { moncashService } = await import("../services/moncashService.js");
+      const status = await moncashService.prefundedTransactionStatus(reference);
+      return res.json(status);
+    } catch (error: any) {
+      console.error("MonCash transfer-status error:", error);
+      res
+        .status(error?.status || 400)
+        .json({ error: { message: error?.message || "MonCash error" } });
+    }
+  },
+);
+
+// 11quater. MONCASH PREFUNDED BALANCE (admin)
+router.get(
+  "/moncash/prefunded-balance",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const adminSecret = process.env.MONCASH_ADMIN_SECRET;
+      if (!adminSecret || req.headers["x-admin-secret"] !== adminSecret) {
+        return res
+          .status(403)
+          .json({ error: { message: "Forbidden", code: "FORBIDDEN" } });
+      }
+      const { moncashService } = await import("../services/moncashService.js");
+      const balance = await moncashService.getPrefundedBalance();
+      return res.json(balance);
+    } catch (error: any) {
+      console.error("MonCash prefunded-balance error:", error);
+      res
+        .status(error?.status || 400)
+        .json({ error: { message: error?.message || "MonCash error" } });
     }
   },
 );
@@ -1687,6 +2279,7 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       currency,
       amountForeign,
       exchangeRate,
+      pin,
     } = req.body;
 
     if (!amount || !country || !recipientName || !method) {
@@ -1705,10 +2298,14 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       .single();
     if (!user) return res.status(404).json({ error: "User not found" });
 
+    // PIN obligatoire pour un transfert sortant
+    if (!pin) throw new Error("PIN requis");
+    await verifyPin(user.pinHash, pin);
+
     const amountCents = Math.round(parseFloat(amount) * 100);
-    if (user.balance < amountCents) {
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
       return res.status(400).json({
-        error: { message: "Solde insuffisant", code: "INSUFFICIENT_BALANCE" },
+        error: { message: "Montant invalide", code: "INVALID_AMOUNT" },
       });
     }
 
@@ -1718,9 +2315,60 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
     const authCode = Math.random().toString(36).substring(2, 10).toUpperCase();
     const externalId = `INTL-${Date.now()}`;
 
-    // Récupérer le solde actuel de l'utilisateur (en centimes)
-    const currentBalanceCents = user.balance;
-    const impactCents = -amountCents; // transfert international = sortie d'argent
+    // === LEDGER : journal en partie double (atomique + idempotent) ===
+    const { data: userPiyesAccount } = await supabase
+      .from("Account")
+      .select("id")
+      .eq("userId", userId)
+      .eq("provider", "piyes")
+      .maybeSingle();
+    const ledgerId = await resolveLedgerForUser(
+      user,
+      userPiyesAccount?.id || null,
+    );
+    const systemCashId = await getSystemCashAccountId();
+    const idempotencyKey = getIdempotencyKey(req);
+    const ledgerResult = await postOrder({
+      idempotencyKey,
+      type: "INTERNATIONAL",
+      customerUserId: userId,
+      amountCents,
+      debitAccountId: ledgerId,
+      creditAccountId: systemCashId,
+      description: `Transfert international vers ${country} — ${recipientName}`,
+      externalRef: idempotencyKey,
+    });
+
+    if (ledgerResult.replay && ledgerResult.status !== "SETTLED") {
+      return res.status(400).json({
+        error: {
+          message: "Transaction refusée : ordre précédent non réglé",
+          code: "INSUFFICIENT_BALANCE",
+        },
+      });
+    }
+
+    const balanceAfter = ledgerResult.debitBalance!;
+    const balanceBefore = balanceAfter + amountCents;
+
+    // Sur replay SETTLED : renvoyer la transaction déjà créée
+    if (ledgerResult.replay) {
+      const { data: existing } = await supabase
+        .from("Transaction")
+        .select("*")
+        .eq("payment_order_id", ledgerResult.paymentOrderId)
+        .eq("role", "PAYER")
+        .maybeSingle();
+      if (existing) {
+        return res.json({
+          id: existing.id,
+          auth_code: existing.auth_code,
+          external_id: existing.external_id,
+          amount: existing.amount / 100,
+          status: "pending",
+        });
+      }
+    }
 
     const { data: transaction, error: txError } = await supabase
       .from("Transaction")
@@ -1734,9 +2382,10 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
         userId,
         auth_code: authCode,
         external_id: externalId,
+        payment_order_id: ledgerResult.paymentOrderId,
         date: new Date().toISOString(),
-        balance_before: currentBalanceCents,
-        balance_after: currentBalanceCents + impactCents,
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
       })
       .select()
       .single();
@@ -1764,14 +2413,10 @@ router.post("/international", authMiddleware, async (req: AuthRequest, res) => {
       updatedAt: new Date().toISOString(),
     });
 
-    const newBalance = user.balance + impactCents;
-    await supabase
-      .from("User")
-      .update({ balance: newBalance })
-      .eq("id", userId);
+    // Mettre à jour le solde du compte piYès depuis le ledger
     await supabase
       .from("Account")
-      .update({ balance: newBalance })
+      .update({ balance: balanceAfter })
       .eq("userId", userId)
       .eq("provider", "piyes");
 
@@ -1882,12 +2527,20 @@ router.get("/resolve/:key", authMiddleware, async (req: AuthRequest, res) => {
         },
       });
     }
+    // Masque partiel du téléphone/email : confirmation sans exposer la PII complète
+    const maskPhone = (p: string | null) =>
+      p && p.length >= 4 ? `${p.slice(0, 3)}••••${p.slice(-2)}` : p;
+    const maskEmail = (e: string | null) => {
+      if (!e || !e.includes("@")) return e;
+      const [local, domain] = e.split("@");
+      return `${local.slice(0, 2)}•••@${domain}`;
+    };
     res.json({
       id: receiver.id,
       name: receiver.name,
       tag: receiver.tag,
-      phone: receiver.phone,
-      email: receiver.email,
+      phone: maskPhone(receiver.phone),
+      email: maskEmail(receiver.email),
       avatarUrl: receiver.avatarUrl,
     });
   } catch (e: any) {

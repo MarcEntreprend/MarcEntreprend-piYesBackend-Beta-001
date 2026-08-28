@@ -1,43 +1,57 @@
 // shared/schemas.ts
 
-import { z } from 'zod';
+import { z } from "zod";
 
-export const loginSchema = z.object({
-  email: z.string().optional(),
-  phone: z.string().optional(),
-  password: z.string().min(6),
-  device: z.string().optional(),
-}).refine(data => data.email || data.phone, {
-  message: "Either email or phone must be provided",
-  path: ["email"]
-});
+export const loginSchema = z
+  .object({
+    email: z.string().optional(),
+    phone: z.string().optional(),
+    password: z.string().min(6),
+    device: z.string().optional(),
+  })
+  .refine((data) => data.email || data.phone, {
+    message: "Either email or phone must be provided",
+    path: ["email"],
+  });
 
-export const signupSchema = z.object({
-  firstName: z.string().min(1, "First name required"),   // obligatoire
-  lastName: z.string().min(1, "Last name required"),     // obligatoire
-  name: z.string().optional(),                           // sera construit côté backend
-  email: z.string().email().optional().or(z.literal('')).transform(val => val === '' ? undefined : val),
-  phone: z.string().optional().or(z.literal('')).transform(val => val === '' ? undefined : val),
-  password: z.string().min(6),
-  device: z.string().optional(),
-  accountType: z.enum(["individual", "business"]).default("individual"), // obligatoire, valeur par défaut
-  // Champs spécifiques business
-  companyName: z.string().optional(),
-  sector: z.string().optional(),
-  nif: z.string().optional(),
-  address: z.string().optional(),
-repName: z.string().optional(),
-  legalRepresentative: z.string().optional(),
-}).refine(data => {
-  const hasEmail = data.email && data.email.trim().length > 0;
-  const hasPhone = data.phone && data.phone.trim().length > 0;
-  return hasEmail || hasPhone;
-}, {
-  message: "Either email or phone must be provided",
-  path: ["email"]
-});
-
-
+export const signupSchema = z
+  .object({
+    firstName: z.string().min(1, "First name required"), // obligatoire
+    lastName: z.string().min(1, "Last name required"), // obligatoire
+    name: z.string().optional(), // sera construit côté backend
+    email: z
+      .string()
+      .email()
+      .optional()
+      .or(z.literal(""))
+      .transform((val) => (val === "" ? undefined : val)),
+    phone: z
+      .string()
+      .optional()
+      .or(z.literal(""))
+      .transform((val) => (val === "" ? undefined : val)),
+    password: z.string().min(6),
+    device: z.string().optional(),
+    accountType: z.enum(["individual", "business"]).default("individual"), // obligatoire, valeur par défaut
+    // Champs spécifiques business
+    companyName: z.string().optional(),
+    sector: z.string().optional(),
+    nif: z.string().optional(),
+    address: z.string().optional(),
+    repName: z.string().optional(),
+    legalRepresentative: z.string().optional(),
+  })
+  .refine(
+    (data) => {
+      const hasEmail = data.email && data.email.trim().length > 0;
+      const hasPhone = data.phone && data.phone.trim().length > 0;
+      return hasEmail || hasPhone;
+    },
+    {
+      message: "Either email or phone must be provided",
+      path: ["email"],
+    },
+  );
 
 export const transferSchema = z.object({
   amount: z.number().positive(),
@@ -71,8 +85,8 @@ export const schedulePaymentSchema = z.object({
   counterparty: z.string(),
   dueDate: z.string(), // ISO string
   title: z.string().optional(),
-  type: z.enum(['incoming', 'outgoing']),
-  frequency: z.enum(['once', 'weekly', 'monthly']).default('once'),
+  type: z.enum(["incoming", "outgoing"]),
+  frequency: z.enum(["once", "weekly", "monthly"]).default("once"),
 });
 
 export const depositWithdrawSchema = z.object({
@@ -86,5 +100,12 @@ export const interBankTransferSchema = z.object({
   destId: z.string(),
   amount: z.number().positive(),
   note: z.string().optional(),
+  pin: z.string().length(4).optional(),
+});
+
+export const servicePaySchema = z.object({
+  providerTag: z.string().min(1),
+  amount: z.number().positive(),
+  description: z.string().optional(),
   pin: z.string().length(4).optional(),
 });

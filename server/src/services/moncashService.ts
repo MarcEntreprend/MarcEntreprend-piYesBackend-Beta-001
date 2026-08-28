@@ -1,185 +1,427 @@
+// server/src/services/moncashService.ts
+//
+// Client REST MonCash – conforme à la documentation officielle
+// (api/RestAPI_MonCash.md) :
+//   POST /oauth/token                       (client_credentials)
+//   POST /v1/CreatePayment                  → payment_token.token
+//   POST /v1/RetrieveTransactionPayment     → payment.transaction_id
+//   POST /v1/RetrieveOrderPayment           → payment.transaction_id
+//   POST /v1/CustomerStatus                 → customerStatus {type, status}
+//   POST /v1/Transfert                      → transfer.transaction_id
+//   POST /v1/PrefundedTransactionStatus     → transStatus
+//   GET  /v1/PrefundedBalance               → balance {balance, message}
 
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 dotenv.config();
 
-const CLIENT_ID = process.env.MONCASH_CLIENT_ID || '4d1d47926758fa27c42175fe6d1780a8';
-const CLIENT_SECRET = process.env.MONCASH_CLIENT_SECRET || '3KTYedyQ6RL3w0TfJBnF_CejmX-7BkWJFyQLZ5bQVgmQzhcW2oKwb5PYI4Xrzk5d';
-const API_HOST = process.env.MONCASH_API_HOST || 'sandbox.moncashbutton.digicelgroup.com/Api';
-const GATEWAY_URL = process.env.MONCASH_GATEWAY_URL || 'https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware';
+const REQUEST_TIMEOUT_MS = 15_000;
 
-interface MonCashTokenResponse {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
+function envConfig() {
+  const clientId = process.env.MONCASH_CLIENT_ID || "";
+  const clientSecret = process.env.MONCASH_CLIENT_SECRET || "";
+  const rawApiHost =
+    process.env.MONCASH_API_HOST ||
+    "sandbox.moncashbutton.digicelgroup.com/Api";
+  // Accepte "sandbox.moncashbutton.digicelgroup.com/Api" (doc) ou une base complète
+  // (ex: "http://127.0.0.1:4001/Api" pour les tests contre un mock local).
+  const apiBase = /^https?:\/\//.test(rawApiHost)
+    ? rawApiHost.replace(/\/+$/, "")
+    : `https://${rawApiHost}`;
+  const gatewayUrl =
+    process.env.MONCASH_GATEWAY_URL ||
+    "https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware";
+  return { clientId, clientSecret, apiBase, gatewayUrl };
 }
 
-interface CustomerStatusResponse {
+function assertConfigured(cfg: ReturnType<typeof envConfig>): void {
+  if (!cfg.clientId || !cfg.clientSecret) {
+    throw new MonCashError(
+      "MonCash non configuré : renseignez MONCASH_CLIENT_ID et MONCASH_CLIENT_SECRET",
+      500,
+    );
+  }
+}
+
+// --- Types conformes à la doc -------------------------------------------------
+
+export interface PaymentToken {
+  expired: string;
+  created: string;
+  token: string;
+}
+
+export interface CreatePaymentResult {
+  token: string;
+  expired: string;
+  created: string;
+  mode: string;
+  redirectUrl: string;
+}
+
+export interface MonCashPayment {
+  reference: string;
+  transaction_id: string;
+  cost: number;
+  message: string;
+  payer: string;
+}
+
+export interface RetrievePaymentResult {
+  payment: MonCashPayment;
+}
+
+export interface CustomerStatusResult {
   type: string;
   status: string[];
 }
 
+export interface TransferResult {
+  transaction_id: string;
+  amount: number;
+  receiver: string;
+  message: string;
+  desc: string;
+}
+
+export interface TransferStatusResult {
+  transStatus: string;
+}
+
+export interface PrefundedBalanceResult {
+  balance: number;
+  message: string;
+}
+
+// --- Interfaces de réponse brute (ce que renvoie réellement MonCash) ----------
+
+interface OAuthTokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  scope?: string;
+  jti?: string;
+}
+
 interface CreatePaymentResponse {
-  payment: {
-    token: string;
-    redirect_url: string;
-  };
+  path?: string;
+  payment_token?: PaymentToken;
+  timestamp?: number;
+  status?: number;
+  mode?: string;
+}
+
+interface CustomerStatusResponse {
+  path?: string;
+  customerStatus?: CustomerStatusResult;
+  timestamp?: number;
+  status?: number;
+  mode?: string;
 }
 
 interface RetrieveTransactionResponse {
-  payment: {
-    transaction_id: string;
-    cost: number;
-    message: string;
-    payer: string;
-  };
+  path?: string;
+  payment?: MonCashPayment;
+  timestamp?: number;
+  status?: number;
+}
+
+interface TransferResponse {
+  path?: string;
+  transfer?: TransferResult;
+  timestamp?: number;
+  status?: number;
+}
+
+interface TransferStatusResponse {
+  path?: string;
+  transStatus?: string;
+  timestamp?: number;
+  status?: number;
+  error?: string;
+  message?: string;
 }
 
 interface PrefundedBalanceResponse {
-  balance: number;
+  path?: string;
+  balance?: PrefundedBalanceResult;
+  timestamp?: number;
+  status?: number;
 }
+
+export class MonCashError extends Error {
+  status: number;
+  moncashMessage?: string;
+
+  constructor(message: string, status = 500, moncashMessage?: string) {
+    super(message);
+    this.name = "MonCashError";
+    this.status = status;
+    this.moncashMessage = moncashMessage;
+  }
+}
+
+// --- Client -------------------------------------------------------------------
 
 class MonCashService {
   private accessToken: string | null = null;
   private tokenExpiry: number = 0;
 
+  private async request(
+    method: "GET" | "POST",
+    path: string,
+    opts: { token?: string; body?: unknown } = {},
+  ): Promise<any> {
+    const cfg = envConfig();
+    assertConfigured(cfg);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+    if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+
+    try {
+      const response = await fetch(`${cfg.apiBase}${path}`, {
+        method,
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        signal: controller.signal,
+      });
+
+      let data: any = null;
+      const text = await response.text();
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        const moncashMessage = data?.message || data?.error || text;
+        if (response.status === 403 && path === "/v1/Transfert") {
+          throw new MonCashError(
+            "Maximum Account Balance",
+            403,
+            moncashMessage,
+          );
+        }
+        throw new MonCashError(
+          `MonCash ${path} Error: ${moncashMessage}`,
+          response.status,
+          moncashMessage,
+        );
+      }
+
+      return data;
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw new MonCashError(
+          `MonCash ${path} timed out after ${REQUEST_TIMEOUT_MS}ms`,
+          504,
+        );
+      }
+      if (err instanceof MonCashError) throw err;
+      throw new MonCashError(`MonCash ${path} request failed: ${err.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async getAccessToken(): Promise<string> {
+    const cfg = envConfig();
+    assertConfigured(cfg);
+
     const now = Date.now();
     if (this.accessToken && now < this.tokenExpiry) {
       return this.accessToken;
     }
 
-    const auth = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-    const response = await fetch(`https://${API_HOST}/oauth/token`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: 'scope=read,write&grant_type=client_credentials'
-    });
+    const basic = Buffer.from(`${cfg.clientId}:${cfg.clientSecret}`).toString(
+      "base64",
+    );
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`MonCash Auth Error: ${error}`);
-    }
-
-    const data = await response.json() as MonCashTokenResponse;
-    this.accessToken = data.access_token;
-    // Set expiry slightly earlier to be safe (59s -> 50s)
-    this.tokenExpiry = now + (data.expires_in - 9) * 1000;
-    
-    return this.accessToken;
-  }
-
-  async getCustomerStatus(phoneNumber: string, pin?: string): Promise<CustomerStatusResponse> {
-    const token = await this.getAccessToken();
-    const response = await fetch(`https://${API_HOST}/v1/CustomerStatus`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ account: phoneNumber, pin: pin || "0000" })
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`MonCash KYC Error: ${error}`);
-    }
-
-    return await response.json() as CustomerStatusResponse;
-  }
-
-  async createPayment(amount: number, orderId: string): Promise<string> {
-    const token = await this.getAccessToken();
-    const response = await fetch(`https://${API_HOST}/v1/CreatePayment`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ amount, orderId })
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`MonCash CreatePayment Error: ${error}`);
-    }
-
-    const data = await response.json() as CreatePaymentResponse;
-    // Construct redirect URL
-    return `${GATEWAY_URL}/Payment/Redirect?token=${data.payment.token}`;
-  }
-
-  async retrieveTransactionPayment(transactionId: string): Promise<RetrieveTransactionResponse> {
-    const token = await this.getAccessToken();
-    const response = await fetch(`https://${API_HOST}/v1/RetrieveTransactionPayment`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ transactionId })
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`MonCash RetrieveTransaction Error: ${error}`);
-    }
-
-    return await response.json() as RetrieveTransactionResponse;
-  }
-
-  async getPrefundedBalance(): Promise<number> {
-    const token = await this.getAccessToken();
-    const response = await fetch(`https://${API_HOST}/v1/PrefundedBalance`, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(`${cfg.apiBase}/oauth/token`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Basic ${basic}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "scope=read,write&grant_type=client_credentials",
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw new MonCashError("MonCash token request timed out", 504);
       }
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`MonCash Balance Error: ${error}`);
+      throw new MonCashError(`MonCash token request failed: ${err.message}`);
+    } finally {
+      clearTimeout(timer);
     }
 
-    const data = await response.json() as PrefundedBalanceResponse;
-    return data.balance;
+    const text = await response.text();
+    let data: OAuthTokenResponse | null = null;
+    try {
+      data = JSON.parse(text) as OAuthTokenResponse;
+    } catch {
+      data = null;
+    }
+
+    if (!response.ok) {
+      throw new MonCashError(
+        `MonCash Auth Error: ${data?.access_token || text}`,
+        response.status,
+      );
+    }
+
+    this.accessToken = data!.access_token;
+    // Expire un peu avant le TTL réel (59s → 50s) pour éviter les fenêtres 401.
+    this.tokenExpiry = now + (data!.expires_in - 9) * 1000;
+    return this.accessToken!;
   }
 
-  async transfer(amount: number, receiver: string, reference: string): Promise<any> {
+  // CREATE PAYMENT — POST /v1/CreatePayment
+  async createPayment(
+    amount: number,
+    orderId: string,
+  ): Promise<CreatePaymentResult> {
     const token = await this.getAccessToken();
-    const response = await fetch(`https://${API_HOST}/v1/Transfert`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        amount,
-        receiver,
-        desc: 'Retrait piYès',
-        reference
-      })
-    });
+    const data = (await this.request("POST", "/v1/CreatePayment", {
+      token,
+      body: { amount, orderId },
+    })) as CreatePaymentResponse;
 
-    if (!response.ok) {
-      const error = await response.text();
-      // Handle 403 specifically
-      if (response.status === 403) {
-        throw new Error('Maximum Account Balance');
-      }
-      throw new Error(`MonCash Transfer Error: ${error}`);
+    if (!data?.payment_token?.token) {
+      throw new MonCashError(
+        "MonCash CreatePayment : réponse sans payment_token",
+        502,
+      );
     }
 
-    return await response.json();
+    return {
+      token: data.payment_token.token,
+      expired: data.payment_token.expired,
+      created: data.payment_token.created,
+      mode: data.mode || "",
+      redirectUrl: `${envConfig().gatewayUrl}/Payment/Redirect?token=${data.payment_token.token}`,
+    };
+  }
+
+  // CAPTURE BY TRANSACTION ID — POST /v1/RetrieveTransactionPayment
+  async retrieveTransactionPayment(
+    transactionId: string,
+  ): Promise<RetrievePaymentResult> {
+    const token = await this.getAccessToken();
+    const data = (await this.request("POST", "/v1/RetrieveTransactionPayment", {
+      token,
+      body: { transactionId },
+    })) as RetrieveTransactionResponse;
+
+    if (!data?.payment) {
+      throw new MonCashError(
+        "MonCash RetrieveTransactionPayment : réponse sans payment",
+        502,
+      );
+    }
+    return { payment: data.payment };
+  }
+
+  // CAPTURE BY ORDER ID — POST /v1/RetrieveOrderPayment
+  async retrieveOrderPayment(orderId: string): Promise<RetrievePaymentResult> {
+    const token = await this.getAccessToken();
+    const data = (await this.request("POST", "/v1/RetrieveOrderPayment", {
+      token,
+      body: { orderId },
+    })) as RetrieveTransactionResponse;
+
+    if (!data?.payment) {
+      throw new MonCashError(
+        "MonCash RetrieveOrderPayment : réponse sans payment",
+        502,
+      );
+    }
+    return { payment: data.payment };
+  }
+
+  // CHECK CUSTOMER STATUS — POST /v1/CustomerStatus
+  async getCustomerStatus(
+    phoneNumber: string,
+    pin?: string,
+  ): Promise<CustomerStatusResult> {
+    const token = await this.getAccessToken();
+    const body: Record<string, string> = { account: phoneNumber };
+    if (pin) body.pin = pin;
+
+    const data = (await this.request("POST", "/v1/CustomerStatus", {
+      token,
+      body,
+    })) as CustomerStatusResponse;
+
+    if (!data?.customerStatus) {
+      throw new MonCashError(
+        "MonCash CustomerStatus : réponse sans customerStatus",
+        502,
+      );
+    }
+    return data.customerStatus;
+  }
+
+  // PAYOUT — POST /v1/Transfert
+  async transfer(
+    amount: number,
+    receiver: string,
+    reference: string,
+    desc = "Retrait piYès",
+  ): Promise<TransferResult> {
+    const token = await this.getAccessToken();
+    const data = (await this.request("POST", "/v1/Transfert", {
+      token,
+      body: { amount, receiver, desc, reference },
+    })) as TransferResponse;
+
+    if (!data?.transfer) {
+      throw new MonCashError("MonCash Transfert : réponse sans transfer", 502);
+    }
+    return data.transfer;
+  }
+
+  // CHECK PREFUNDED TRANSACTION STATUS — POST /v1/PrefundedTransactionStatus
+  async prefundedTransactionStatus(
+    reference: string,
+  ): Promise<TransferStatusResult> {
+    const token = await this.getAccessToken();
+    const data = (await this.request("POST", "/v1/PrefundedTransactionStatus", {
+      token,
+      body: { reference },
+    })) as TransferStatusResponse;
+
+    if (!data?.transStatus) {
+      throw new MonCashError(
+        "MonCash PrefundedTransactionStatus : réponse sans transStatus",
+        502,
+      );
+    }
+    return { transStatus: data.transStatus };
+  }
+
+  // BALANCE PREFUNDED — GET /v1/PrefundedBalance
+  async getPrefundedBalance(): Promise<PrefundedBalanceResult> {
+    const token = await this.getAccessToken();
+    const data = (await this.request("GET", "/v1/PrefundedBalance", {
+      token,
+    })) as PrefundedBalanceResponse;
+
+    if (typeof data?.balance?.balance !== "number") {
+      throw new MonCashError(
+        "MonCash PrefundedBalance : réponse sans balance",
+        502,
+      );
+    }
+    return { balance: data.balance.balance, message: data.balance.message };
   }
 }
 

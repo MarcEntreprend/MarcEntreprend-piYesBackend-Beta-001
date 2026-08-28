@@ -1,8 +1,19 @@
 // server/src/routes/user.ts
 import express from "express";
 import { authMiddleware, AuthRequest } from "../middleware.js";
-import { supabase } from "../supabase.js";
-import { otpService } from "../services/otpService.js";
+import { supabase, supabaseService } from "../supabase.js";
+import {
+  createOtpChallenge,
+  verifyOtpChallenge,
+  getOtpChallengeMetadata,
+} from "../services/otpService.js";
+import { sendOtp } from "../services/otpDeliveryService.js";
+import {
+  lockoutKey,
+  checkLockout,
+  recordFailure,
+  recordSuccess,
+} from "../services/lockoutService.ts";
 import crypto from "crypto";
 
 const router = express.Router();
@@ -74,20 +85,49 @@ router.get("/sync", authMiddleware, async (req: AuthRequest, res) => {
       (n: any) => !n.isRead,
     ).length;
 
+    // Récupérer les soldes depuis le ledger
+    const ledgerAccounts = await supabase
+      .from("ledger_account")
+      .select("id, piyes_account_id")
+      .eq("customer_user_id", userId);
+
+    const ledgerBalances = await supabase
+      .from("ledger_account_balance")
+      .select("ledger_account_id, balance_cents")
+      .in(
+        "ledger_account_id",
+        (ledgerAccounts.data || []).map((a: any) => a.id),
+      );
+
+    const balanceMap: Record<string, number> = {};
+    (ledgerBalances.data || []).forEach((b: any) => {
+      const acc = (ledgerAccounts.data || []).find(
+        (a: any) => a.id === b.ledger_account_id,
+      );
+      if (acc) balanceMap[acc.piyes_account_id] = b.balance_cents;
+    });
+
     const accounts = (user.accounts || []).map((acc: any) => ({
       ...acc,
-      balance: acc.balance / 100,
+      balance: (balanceMap[acc.id] ?? acc.balance) / 100,
     }));
 
     // Ensure piYès account is always present and first
     const hasPiyes = accounts.some((a: any) => a.provider === "piyes");
     if (!hasPiyes) {
+      // Récupérer le solde ledger du compte piYès
+      const piyesLedger = (ledgerAccounts.data || []).find(
+        (a: any) => a.piyes_account_id === user.accountNumber,
+      );
+      const piyesBalance = piyesLedger
+        ? (balanceMap[piyesLedger.id] ?? 0)
+        : user.balance;
       accounts.unshift({
         id: "piyes-main",
         userId: user.id,
         provider: "piyes",
         label: "piYès",
-        balance: user.balance / 100,
+        balance: piyesBalance / 100,
         color: "#830AD1",
         accountNumber: user.accountNumber,
         logoText: "P",
@@ -201,6 +241,54 @@ router.post(
   },
 );
 
+// ── Phase 2 — P2P : marquer TOUTES les notifications comme lues ─────────────
+router.post(
+  "/notifications/mark-all-read",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { error } = await supabase
+        .from("Notification")
+        .update({ isRead: true })
+        .eq("userId", userId)
+        .eq("isRead", false);
+
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Mark all read error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
+// ── Phase 2 — P2P : nombre de notifications non lues ─────────────────────────
+router.get(
+  "/notifications/unread-count",
+  authMiddleware,
+  async (req: AuthRequest, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      const { count, error } = await supabase
+        .from("Notification")
+        .select("id", { count: "exact", head: true })
+        .eq("userId", userId)
+        .eq("isRead", false);
+
+      if (error) throw error;
+      res.json({ unreadCount: count || 0 });
+    } catch (error) {
+      console.error("Unread count error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+
 router.get("/tag", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
@@ -224,6 +312,31 @@ router.delete("/delete", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    // Ré-authentification : le mot de passe est requis pour supprimer le compte
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({
+        error: {
+          message: "Mot de passe requis pour supprimer le compte",
+          code: "PASSWORD_REQUIRED",
+        },
+      });
+    }
+    const { data: userWithPw } = await supabase
+      .from("User")
+      .select("passwordHash")
+      .eq("id", userId)
+      .single();
+    const bcryptCheck = await import("bcryptjs");
+    const pwValid = userWithPw?.passwordHash
+      ? await bcryptCheck.compare(password, userWithPw.passwordHash)
+      : false;
+    if (!pwValid) {
+      return res.status(403).json({
+        error: { message: "Mot de passe incorrect", code: "INVALID_PASSWORD" },
+      });
+    }
 
     // Fetch current user name
     const { data: user } = await supabase
@@ -265,8 +378,24 @@ router.post("/privacy", authMiddleware, async (req: AuthRequest, res) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const settings = req.body;
-    const { id, userId: _, ...data } = settings;
+    // Whitelist stricte des champs PrivacySettings
+    const PRIVACY_FIELDS = [
+      "blockRequestsFrom",
+      "blockTransfersFrom",
+      "blockedEntities",
+      "visibility",
+      "allowAnonymousTransfers",
+      "hideTagInReceipts",
+      "requestsOnlyFromFriends",
+    ] as const;
+    const data: any = {
+      updatedAt: new Date().toISOString(),
+    };
+    for (const field of PRIVACY_FIELDS) {
+      if ((req.body as any)[field] !== undefined) {
+        data[field] = (req.body as any)[field];
+      }
+    }
 
     const { error } = await supabase
       .from("PrivacySettings")
@@ -333,6 +462,7 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
       timezone,
       avatarUrl,
       otpCode,
+      phoneOtpCode,
     } = req.body;
 
     // Fetch current user to compare
@@ -344,26 +474,6 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
 
     if (!currentUser) return res.status(404).json({ error: "User not found" });
 
-    // before "Désactiver OTP pour profile"
-    // // Sensitive changes check (Email/Phone)
-    // const normalizedPhone = phone ? (phone.startsWith('+') ? phone : (phone.startsWith('509') ? `+${phone}` : `+509${phone}`)) : phone;
-    // const emailChanged = email && email.toLowerCase() !== currentUser.email.toLowerCase();
-    // const phoneChanged = normalizedPhone && normalizedPhone !== currentUser.phone;
-
-    // if (emailChanged || phoneChanged) {
-    //   if (!otpCode) {
-    //     return res.status(400).json({ error: 'OTP verification required for email or phone changes', code: 'OTP_REQUIRED' });
-    //   }
-    //   const target = emailChanged ? email.toLowerCase() : normalizedPhone;
-    //   const isValid = otpService.verifyOtp(target, otpCode);
-    //   if (!isValid) {
-    //     return res.status(400).json({ error: 'Invalid or expired OTP code' });
-    //   }
-    // }
-
-    // Désactiver OTP pour profile
-    // TEST MODE MVP : OTP désactivé pour email/phone — accepté directement
-    // TODO: réactiver le bloc OTP ci-dessous en production
     const normalizedPhone = phone
       ? phone.startsWith("+")
         ? phone
@@ -371,7 +481,64 @@ router.post("/profile", authMiddleware, async (req: AuthRequest, res) => {
           ? `+${phone}`
           : `+509${phone}`
       : phone;
-    // (vérification OTP désactivée pour beta test)
+
+    const emailChanged =
+      email &&
+      currentUser.email &&
+      email.toLowerCase() !== currentUser.email.toLowerCase();
+    const phoneChanged =
+      normalizedPhone && normalizedPhone !== currentUser.phone;
+
+    // Vérification OTP : chaque canal modifié est vérifié indépendamment.
+    const verifyChannelOtp = async (
+      target: string,
+      code: string | undefined,
+    ) => {
+      if (!code) return false;
+      const { data: challenge } = await supabaseService
+        .from("otp_challenge")
+        .select("id")
+        .eq("target", target)
+        .is("consumed_at", null)
+        .gt("expires_at", new Date().toISOString())
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      return challenge?.id
+        ? await verifyOtpChallenge(challenge.id, code)
+        : false;
+    };
+
+    if (emailChanged && phoneChanged) {
+      const emailOk = await verifyChannelOtp(email.toLowerCase(), otpCode);
+      const phoneOk = await verifyChannelOtp(normalizedPhone, phoneOtpCode);
+      if (!emailOk || !phoneOk) {
+        return res.status(400).json({
+          error: {
+            message: "Code invalide ou expiré",
+            code: "INVALID_OTP",
+          },
+        });
+      }
+    } else if (emailChanged || phoneChanged) {
+      const target = emailChanged ? email.toLowerCase() : normalizedPhone;
+      const code = emailChanged ? otpCode : phoneOtpCode || otpCode;
+      if (!code) {
+        return res.status(400).json({
+          error: {
+            message:
+              "Vérification OTP requise pour changer l'email ou le téléphone",
+            code: "OTP_REQUIRED",
+          },
+        });
+      }
+      const isValid = await verifyChannelOtp(target, code);
+      if (!isValid) {
+        return res.status(400).json({
+          error: { message: "Code invalide ou expiré", code: "INVALID_OTP" },
+        });
+      }
+    }
 
     // Calculate initials if name is changed
     const initials = name
@@ -463,6 +630,30 @@ router.post("/pin", authMiddleware, async (req: AuthRequest, res) => {
     if (!pin || pin.length !== 4)
       return res.status(400).json({ error: "Invalid PIN" });
 
+    const { data: existing } = await supabase
+      .from("User")
+      .select("pinHash")
+      .eq("id", userId)
+      .single();
+
+    // Si un PIN est déjà configuré, exiger l'ancien PIN pour le changer
+    if (existing?.pinHash) {
+      const { currentPin } = req.body;
+      if (!currentPin)
+        return res.status(400).json({
+          error: { message: "PIN actuel requis", code: "CURRENT_PIN_REQUIRED" },
+        });
+      const bcryptCheck = await import("bcryptjs");
+      const isCurrentValid = await bcryptCheck.compare(
+        currentPin,
+        existing.pinHash,
+      );
+      if (!isCurrentValid)
+        return res.status(400).json({
+          error: { message: "PIN actuel incorrect", code: "INVALID_PIN" },
+        });
+    }
+
     const bcrypt = await import("bcryptjs");
     const pinHash = await bcrypt.hash(pin, 10);
 
@@ -488,6 +679,18 @@ router.post("/pin/verify", authMiddleware, async (req: AuthRequest, res) => {
     const { pin } = req.body;
     if (!pin) return res.status(400).json({ error: "PIN is required" });
 
+    // Verrouillage par compte : anti-brute-force PIN (4 chiffres)
+    const pinKey = lockoutKey("pin", userId);
+    const lock = checkLockout(pinKey);
+    if (lock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives PIN. Réessayez plus tard.",
+          code: "PIN_LOCKED",
+        },
+      });
+    }
+
     const { data: user } = await supabase
       .from("User")
       .select("pinHash")
@@ -495,15 +698,21 @@ router.post("/pin/verify", authMiddleware, async (req: AuthRequest, res) => {
       .single();
 
     if (!user || !user.pinHash) {
-      return res.status(404).json({ error: "PIN not set" });
+      return res.status(400).json({
+        error: { message: "PIN non configuré", code: "PIN_NOT_SET" },
+      });
     }
 
-    // TEST MODE MVP : accepte n'importe quel PIN sans vérification
-    // TODO: remplacer par la vérification bcrypt en production :
-    // const bcrypt = await import('bcryptjs');
-    // const isValid = await bcrypt.compare(pin, user.pinHash);
-    // if (!isValid) return res.status(400).json({ error: 'Invalid PIN' });
+    const bcrypt = await import("bcryptjs");
+    const isValid = await bcrypt.compare(pin, user.pinHash);
+    if (!isValid) {
+      recordFailure(pinKey);
+      return res.status(400).json({
+        error: { message: "PIN incorrect", code: "INVALID_PIN" },
+      });
+    }
 
+    recordSuccess(pinKey);
     res.json({ success: true });
   } catch (error) {
     console.error("PIN verification error:", error);
@@ -525,7 +734,7 @@ router.get("/search", authMiddleware, async (req: AuthRequest, res) => {
     const query = q.trim().toLowerCase();
     let dbQuery = supabase
       .from("User")
-      .select("id, name, tag, phone, avatarUrl, initials, verificationStatus");
+      .select("id, name, tag, avatarUrl, initials, verificationStatus");
 
     if (query.startsWith("@")) {
       // Search by tag
@@ -685,17 +894,24 @@ router.post("/keys", authMiddleware, async (req: AuthRequest, res) => {
       if (error) throw error;
       return res.json(key);
     } else {
-      // email or phone - Use centralized otpService
+      // email or phone - challenge OTP avec métadonnées
       const requestId = crypto.randomUUID();
-      otpService.generateOtp(requestId, {
+      const target = cleanValue;
+      const challenge = await createOtpChallenge(target, "key_creation", {
         type,
         value: cleanValue,
         userId,
       });
+      if (!challenge) {
+        return res
+          .status(500)
+          .json({ error: "Failed to create OTP challenge" });
+      }
+      await sendOtp(target, challenge.code, "vérification d'une clé");
 
       // Return a "pending" key object
       return res.json({
-        id: requestId,
+        id: challenge.id,
         userId,
         type,
         value: cleanValue,
@@ -740,73 +956,35 @@ router.post(
       const id = req.params.id as string;
       const { code } = req.body;
 
-      // // Check in centralized otpService
-      // const isValid = otpService.verifyOtp(id, code, false);
-      // if (isValid) {
-      //   const metadata = otpService.getMetadata(id);
-      //   if (!metadata || metadata.userId !== userId) {
-      //     return res.status(403).json({ error: 'Forbidden or session expired' });
-      //   }
-
-      // NEW : BYPASSING
-      const isValid = otpService.verifyOtp(id, code, false);
-      if (isValid) {
-        const metadata = otpService.getMetadata(id);
-
-        // TEST MODE : si pas de metadata en mémoire (store purgé ou test),
-        // on accepte quand même si la key existe déjà en DB (isVerified = true)
-        // ou si on a le metadata avec le bon userId
-        if (metadata && metadata.userId !== userId) {
-          return res
-            .status(403)
-            .json({ error: "Forbidden or session expired" });
-        }
-
-        if (!metadata) {
-          // Pas de metadata en mémoire — vérifier si la key existe déjà en BDD
-          const { data: existingKey } = await supabase
-            .from("Key")
-            .select("id, isVerified")
-            .eq("id", id)
-            .eq("userId", userId)
-            .maybeSingle();
-          if (existingKey?.isVerified) return res.json(true);
-          // En test mode : accepter sans metadata
-          console.log(`[TEST MODE] Key verify without metadata for id=${id}`);
-          return res.json(true);
-        }
-
-        // Valid! Insert into DB
-        const { error } = await supabase.from("Key").insert({
-          id, // Use the same ID (requestId)
-          userId: metadata.userId,
-          type: metadata.type,
-          value: metadata.value,
-          isVerified: true,
-          createdAt: new Date().toISOString(),
-        });
-
-        if (error) throw error;
-
-        otpService.verifyOtp(id, code, true); // Consume it now
-        return res.json(true);
+      if (!code) {
+        return res.status(400).json({ error: "Code OTP requis" });
       }
 
-      // Fallback for keys already in DB (though currently they don't have otpCode column)
-      const { data: key } = await supabase
-        .from("Key")
-        .select("*")
-        .eq("id", id)
-        .eq("userId", userId)
-        .single();
+      const isValid = await verifyOtpChallenge(id, code, false);
+      if (!isValid) {
+        return res.status(400).json({
+          error: { message: "Code invalide ou expiré", code: "INVALID_OTP" },
+        });
+      }
 
-      if (!key) return res.status(404).json({ error: "Key not found" });
-      if (key.isVerified) return res.json(true);
+      const metadata = await getOtpChallengeMetadata(id);
+      if (!metadata || metadata.userId !== userId) {
+        return res.status(403).json({ error: "Forbidden or session expired" });
+      }
 
-      // Since we know the DB doesn't have otpCode, we can't verify from DB
-      return res.status(400).json({
-        error: "Verification failed. Please try adding the key again.",
+      const { error } = await supabase.from("Key").insert({
+        id,
+        userId: metadata.userId,
+        type: metadata.type,
+        value: metadata.value,
+        isVerified: true,
+        createdAt: new Date().toISOString(),
       });
+
+      if (error) throw error;
+
+      await verifyOtpChallenge(id, code, true);
+      return res.json(true);
     } catch (error) {
       console.error("Verify key error:", error);
       res.status(500).json({ error: "Internal server error" });
@@ -879,16 +1057,20 @@ router.patch(
 );
 
 // POST /api/v1/user/by-phones
-// Receives normalized 8-digit phones, builds all variants for DB lookup
-router.post("/by-phones", async (req: AuthRequest, res) => {
+router.post("/by-phones", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { phones } = req.body;
 
-    // Temporary debug log — remove after confirming format
-    console.log("[by-phones] Received phones sample:", phones.slice(0, 5));
-
     if (!phones || !Array.isArray(phones) || phones.length === 0) {
       return res.status(400).json({ error: "Liste de phones requise" });
+    }
+
+    // Limite stricte : pas d'exfiltration massive de l'annuaire
+    const MAX_PHONES = 50;
+    if (phones.length > MAX_PHONES) {
+      return res
+        .status(400)
+        .json({ error: `Maximum ${MAX_PHONES} numéros par requête` });
     }
 
     // Build all format variants for each phone to maximize DB matches
@@ -903,27 +1085,16 @@ router.post("/by-phones", async (req: AuthRequest, res) => {
       ),
     ];
 
-    console.log(
-      `[by-phones] Searching ${phoneVariants.length} variants for ${phones.length} phones`,
-    );
-
     const { data: users, error } = await supabase
       .from("User")
-      .select("id, phone, name, firstName, lastName, tag, avatarUrl")
+      .select("id, name, tag, avatarUrl")
       .in("phone", phoneVariants);
 
-    // Temporary debug log
-    console.log(
-      "[by-phones] Found users:",
-      (users || []).map((u: any) => u.phone),
-    );
-    //
     if (error) {
       console.error("[by-phones] Supabase error:", error);
       return res.status(500).json({ error: "Erreur recherche utilisateurs" });
     }
 
-    console.log(`[by-phones] Found ${users?.length || 0} users`);
     return res.json({ users: users || [] });
   } catch (error) {
     console.error("[by-phones] Route error:", error);

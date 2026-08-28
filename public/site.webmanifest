@@ -1,0 +1,28 @@
+{
+  "name": "piYès Wallet",
+  "short_name": "piYès",
+  "description": "Portefeuille numérique piYès - Paiements simples et rapides en Haïti",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#830AD1",
+  "background_color": "#FFFFFF",
+  "display": "standalone",
+  "orientation": "portrait",
+  "start_url": "/",
+  "scope": "/",
+  "categories": ["finance", "payments", "business"],
+  "lang": "fr",
+  "dir": "ltr"
+}

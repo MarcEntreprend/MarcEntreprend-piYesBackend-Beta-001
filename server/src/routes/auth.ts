@@ -4,17 +4,40 @@ import express from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { supabase } from "../supabase.js";
-import { otpService } from "../services/otpService.js";
+import { supabase, supabaseService } from "../supabase.js";
+import {
+  createOtpChallenge,
+  verifyOtpChallenge,
+  hasActiveChallenge,
+} from "../services/otpService.js";
+import { sendOtp } from "../services/otpDeliveryService.js";
 import { loginSchema, signupSchema } from "../../../shared/schemas.js";
-import { authMiddleware, AuthRequest } from "../middleware.js";
+import {
+  authMiddleware,
+  AuthRequest,
+  JWT_ISSUER,
+  JWT_AUDIENCE,
+} from "../middleware.js";
+import {
+  lockoutKey,
+  checkLockout,
+  recordFailure,
+  recordSuccess,
+} from "../services/lockoutService.js";
 
 const router = express.Router();
 
-const ACCESS_SECRET =
-  process.env.JWT_ACCESS_SECRET || "piyes_access_secret_change_me_in_prod";
-const REFRESH_SECRET =
-  process.env.JWT_REFRESH_SECRET || "piyes_refresh_secret_change_me_in_prod";
+console.log(">>> [AUTH] auth.ts chargé !");
+console.log(">>> [AUTH] router =", router);
+console.log(">>> [AUTH] router.use =", typeof router?.use);
+
+const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
+const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+if (!ACCESS_SECRET || !REFRESH_SECRET) {
+  throw new Error(
+    "JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are required (set them in .env)",
+  );
+}
 
 router.post("/logout-all", authMiddleware, async (req: AuthRequest, res) => {
   try {
@@ -22,9 +45,145 @@ router.post("/logout-all", authMiddleware, async (req: AuthRequest, res) => {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     await supabase.from("Session").delete().eq("userId", userId);
-    res.clearCookie("refreshToken");
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    });
     res.json({ success: true, message: "Logged out from all devices" });
   } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ============================================================
+// POST /auth/refresh
+// Renouvelle l'access token via le refresh token (cookie httpOnly).
+// Rotation : un nouveau refresh token est émis, l'ancien est remplacé
+// en base. Si un refresh token signé n'existe plus en base (rejeu d'un
+// token révoqué), toutes les sessions de l'utilisateur sont purgées.
+// ============================================================
+router.post("/refresh", async (req, res) => {
+  try {
+    // Pour la démo : accepte le refresh token depuis cookie (prod) OU body/header (fallback si cookie bloqué)
+    const refreshToken =
+      req.cookies?.refreshToken ||
+      req.body?.refreshToken ||
+      (req.headers["x-refresh-token"] as string);
+    if (!refreshToken) {
+      return res.status(401).json({
+        error: { message: "Refresh token manquant", code: "UNAUTHORIZED" },
+      });
+    }
+
+    let payload: any;
+    try {
+      payload = jwt.verify(refreshToken, REFRESH_SECRET, {
+        algorithms: ["HS256"],
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+      });
+    } catch {
+      return res.status(401).json({
+        error: { message: "Refresh token invalide", code: "UNAUTHORIZED" },
+      });
+    }
+
+    const { data: session, error } = await supabase
+      .from("Session")
+      .select("*")
+      .eq("token", refreshToken)
+      .eq("userId", payload.id)
+      .maybeSingle();
+
+    if (error || !session) {
+      // Token signé mais absent en base → rejeu suspect : purge les sessions
+      await supabase.from("Session").delete().eq("userId", payload.id);
+      res.clearCookie("refreshToken", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      });
+      return res.status(401).json({
+        error: {
+          message: "Session révoquée. Reconnectez-vous.",
+          code: "UNAUTHORIZED",
+        },
+      });
+    }
+
+    if (!session.isVerified) {
+      return res.status(401).json({
+        error: {
+          message: "Session non vérifiée (MFA requis)",
+          code: "UNAUTHORIZED",
+        },
+      });
+    }
+    if (new Date(session.expiresAt).getTime() < Date.now()) {
+      await supabase.from("Session").delete().eq("id", session.id);
+      return res.status(401).json({
+        error: { message: "Session expirée", code: "UNAUTHORIZED" },
+      });
+    }
+
+    const { data: user } = await supabase
+      .from("User")
+      .select("id, email")
+      .eq("id", payload.id)
+      .maybeSingle();
+    if (!user) {
+      return res.status(401).json({
+        error: { message: "Utilisateur introuvable", code: "UNAUTHORIZED" },
+      });
+    }
+
+    const newAccessToken = jwt.sign(
+      { id: user.id, email: user.email, sid: session.id },
+      ACCESS_SECRET,
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+    const newRefreshToken = jwt.sign(
+      { id: user.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+
+    // Rotation : remplace l'ancien refresh token en base
+    await supabase
+      .from("Session")
+      .update({
+        token: newRefreshToken,
+        expiresAt: new Date(
+          Date.now() + 30 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      })
+      .eq("id", session.id);
+
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({
+      token: newAccessToken,
+      refreshToken: newRefreshToken,
+      user: { id: user.id, email: user.email },
+    });
+  } catch (error) {
+    console.error("Refresh error:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -33,6 +192,12 @@ router.post("/signup", async (req, res) => {
   try {
     const validated = signupSchema.parse(req.body);
     const device = validated.device || req.ip || "unknown";
+
+    // Construction du nom d'affichage
+    const displayName =
+      validated.name ||
+      `${validated.firstName || ""} ${validated.lastName || ""}`.trim() ||
+      "user";
 
     // Robust tag generation
     const generateBaseTag = (name: string) => {
@@ -45,7 +210,7 @@ router.post("/signup", async (req, res) => {
         .replace(/\s+/g, "_"); // Spaces to underscores
     };
 
-    let baseTag = generateBaseTag(validated.name);
+    let baseTag = generateBaseTag(displayName);
     if (baseTag.length < 4) baseTag = baseTag.padEnd(4, "0");
     if (baseTag.length > 24) baseTag = baseTag.substring(0, 24); // Leave room for @ and potential suffix
 
@@ -104,7 +269,9 @@ router.post("/signup", async (req, res) => {
     const userId = uuidv4();
 
     // Format email en minuscules
-    validated.email = validated.email?.toLowerCase();
+    if (validated.email) {
+      validated.email = validated.email.toLowerCase();
+    }
 
     // Fonction Title Case sécurisée
     const toTitleCase = (str?: string) =>
@@ -116,27 +283,25 @@ router.post("/signup", async (req, res) => {
     validated.firstName = toTitleCase(validated.firstName);
     validated.lastName = toTitleCase(validated.lastName);
 
-    // Fusionner pour colonne name
-    validated.name =
-      `${validated.firstName || ""} ${validated.lastName || ""}`.trim();
+    // Fusionner pour colonne name (utilise displayName si validated.name est vide)
+    validated.name = displayName;
 
     const { data: user, error: userError } = await supabase
       .from("User")
       .insert({
         id: userId,
-        firstName: validated.firstName, // <-- ajouté
-        lastName: validated.lastName, // <-- ajouté
-        name: validated.name, // fusion prénom + nom
-        email: validated.email || null, // nullable — phone-only signup autorisé
-        //email: validated.email,
-        accountType: validated.accountType || "individual", // <-- ajouté
+        firstName: validated.firstName,
+        lastName: validated.lastName,
+        name: validated.name,
+        email: validated.email || null,
+        accountType: validated.accountType || "individual",
         passwordHash,
         tag,
         accountNumber,
         phone: validated.phone,
         balance: 0,
         verificationStatus: "unverified",
-        isDeviceVerified: true, // First device is verified
+        isDeviceVerified: true,
         language: "Français",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -146,6 +311,20 @@ router.post("/signup", async (req, res) => {
 
     if (userError || !user)
       throw userError || new Error("Failed to create user");
+
+    // Créer le ledger account pour ce nouvel utilisateur
+    const { data: ledgerAccount, error: ledgerError } = await supabase.rpc(
+      "piyes_ledger_get_or_create_customer_account",
+      {
+        p_customer_user_id: user.id,
+        p_name: user.name,
+        p_piyes_account_id: user.accountNumber,
+        p_piyes_user_id: user.id,
+        p_initial_balance_cents: 0,
+      },
+    );
+    if (ledgerError)
+      console.error("Ledger creation error (non-bloquant):", ledgerError);
 
     // --- CREATION BUSINESS PROFILE SI ENTREPRISE ---
     if (validated.accountType === "business") {
@@ -172,7 +351,6 @@ router.post("/signup", async (req, res) => {
     });
 
     // Créer le compte piYès avec permission = 'oui' et id UUID
-    // account( auto + phone-only)
     const { v4: uuidv4acc } = await import("uuid");
     const { error: accError } = await supabase.from("Account").insert({
       id: uuidv4acc(),
@@ -193,17 +371,33 @@ router.post("/signup", async (req, res) => {
     if (accError)
       console.error("Account creation error (non-bloquant):", accError);
 
-    const token = jwt.sign({ id: user.id, email: user.email }, ACCESS_SECRET, {
-      expiresIn: "24h",
-    });
-    const refreshToken = jwt.sign({ id: user.id }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
-
     // Create session
     const { v4: uuidv4session } = await import("uuid");
+    const sessionId = uuidv4session();
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, sid: sessionId },
+      ACCESS_SECRET,
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+    const refreshToken = jwt.sign(
+      { id: user.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+
     const { error: sessionError } = await supabase.from("Session").insert({
-      id: uuidv4session(),
+      id: sessionId,
       userId: user.id,
       token: refreshToken,
       device,
@@ -217,7 +411,7 @@ router.post("/signup", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
@@ -233,6 +427,7 @@ router.post("/signup", async (req, res) => {
         balance: 0,
       },
       token,
+      refreshToken,
     });
   } catch (error: any) {
     console.error("Signup error:", error);
@@ -245,8 +440,25 @@ router.post("/signup", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const validated = loginSchema.parse(req.body);
-    validated.email = validated.email?.toLowerCase();
+    if (validated.email) {
+      validated.email = validated.email.toLowerCase();
+    }
     const device = validated.device || req.ip || "unknown";
+
+    // Verrouillage par compte : anti-brute-force indépendant de l'IP
+    const accountKey = lockoutKey(
+      "login",
+      (validated.email || validated.phone || "").toLowerCase(),
+    );
+    const lock = checkLockout(accountKey);
+    if (lock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives. Réessayez plus tard.",
+          code: "ACCOUNT_LOCKED",
+        },
+      });
+    }
 
     let query = supabase.from("User").select("*");
 
@@ -262,9 +474,9 @@ router.post("/login", async (req, res) => {
 
     const { data: user, error } = await query.single();
 
-    // message d'erreur login
+    // message d'erreur login (neutre : ne révèle pas si le compte existe)
     if (error || !user) {
-      // Ne pas révéler si c'est l'email ou le phone qui n'existe pas (sécurité)
+      recordFailure(accountKey);
       console.log(
         `[AUTH] Login FAILED: User not found for ${validated.email || validated.phone}`,
       );
@@ -282,15 +494,19 @@ router.post("/login", async (req, res) => {
       user.passwordHash,
     );
     if (!isPasswordValid) {
+      recordFailure(accountKey);
       console.log(`[AUTH] Login FAILED: Wrong password for user ${user.id}`);
       return res.status(401).json({
         error: {
           message:
-            'Mot de passe incorrect. Veuillez réessayer ou utiliser "Mot de passe oublié".',
-          code: "WRONG_PASSWORD",
+            "Identifiants incorrects. Vérifiez votre email/téléphone et mot de passe.",
+          code: "INVALID_CREDENTIALS",
         },
       });
     }
+
+    // Mot de passe correct → on réinitialise le compteur d'échecs
+    recordSuccess(accountKey);
 
     // Vérifier si le compte est désactivé (permission 'non')
     const { data: userAccount } = await supabase
@@ -323,10 +539,17 @@ router.post("/login", async (req, res) => {
       const tempToken = jwt.sign(
         { id: user.id, isPending: true },
         REFRESH_SECRET,
-        { expiresIn: "10m" },
+        { expiresIn: "10m", issuer: JWT_ISSUER, audience: JWT_AUDIENCE },
       );
-      const otpCode = otpService.generateOtp(tempToken);
+      const target = user.email || user.phone || "";
+      const challenge = await createOtpChallenge(target, "login_mfa");
+      if (!challenge) {
+        return res
+          .status(500)
+          .json({ error: "Failed to create OTP challenge" });
+      }
       const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+      await sendOtp(target, challenge.code, "connexion");
 
       // Create a pending session
       const { v4: uuidv4 } = await import("uuid");
@@ -338,8 +561,9 @@ router.post("/login", async (req, res) => {
           token: tempToken,
           device,
           expiresAt: otpExpiresAt.toISOString(),
-          otpCode,
+          otpCode: null,
           otpExpiresAt: otpExpiresAt.toISOString(),
+          challengeId: challenge.id,
           isVerified: false,
           createdAt: new Date().toISOString(),
         });
@@ -357,21 +581,31 @@ router.post("/login", async (req, res) => {
     }
 
     // No other device, or same device
-    const token = jwt.sign({ id: user.id, email: user.email }, ACCESS_SECRET, {
-      expiresIn: "24h",
-    });
-    const refreshToken = jwt.sign({ id: user.id }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
-
-    // Update or create session
-    // We'll just insert a new session for this device
-    // If we want to limit to 1 device, we'd delete others first
-    // await supabase.from('Session').delete().eq('userId', user.id);
-
     const { v4: uuidv4login } = await import("uuid");
+    const loginSessionId = uuidv4login();
+    const token = jwt.sign(
+      { id: user.id, email: user.email, sid: loginSessionId },
+      ACCESS_SECRET,
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+    const refreshToken = jwt.sign(
+      { id: user.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+
     const { error: loginSessionError } = await supabase.from("Session").insert({
-      id: uuidv4login(),
+      id: loginSessionId,
       userId: user.id,
       token: refreshToken,
       device,
@@ -385,7 +619,7 @@ router.post("/login", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
@@ -403,6 +637,7 @@ router.post("/login", async (req, res) => {
         hasPin: !!user.pinHash,
       },
       token,
+      refreshToken,
     });
   } catch (error: any) {
     res
@@ -430,35 +665,58 @@ router.post("/verify-session-otp", async (req, res) => {
       });
     }
 
-    // Vérification OTP : accepter si le code correspond OU si l'otpService valide (TEST MODE)
-    // En TEST MODE, otpService.verifyOtp retourne toujours true — donc ce check passe toujours
-    const otpValid =
-      otpService.verifyOtp(requestId, code, false) || session.otpCode === code;
+    // Verrouillage par compte OTP : anti-brute-force du code à 6 chiffres
+    const otpKey = lockoutKey("otp", session.userId);
+    const otpLock = checkLockout(otpKey);
+    if (otpLock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives de code. Réessayez plus tard.",
+          code: "OTP_LOCKED",
+        },
+      });
+    }
+
+    const otpValid = session.challengeId
+      ? await verifyOtpChallenge(session.challengeId, code)
+      : false;
     const notExpired =
       !session.otpExpiresAt || new Date() <= new Date(session.otpExpiresAt);
 
     if (!otpValid || !notExpired) {
+      recordFailure(otpKey);
       return res.status(400).json({
         error: { message: "Code incorrect ou expiré", code: "INVALID_OTP" },
       });
     }
 
-    // MVP : supprimer TOUTES les autres sessions de cet user — une seule session active
-    // Garantit qu'un seul device est connecté à la fois
+    recordSuccess(otpKey);
+
     await supabase
       .from("Session")
       .delete()
       .eq("userId", session.userId)
       .neq("token", requestId);
 
-    // Upgrade la session courante en session vérifiée
-    const refreshToken = jwt.sign({ id: session.userId }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
+    const refreshToken = jwt.sign(
+      { id: session.userId, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
     const token = jwt.sign(
-      { id: session.userId, email: session.user.email },
+      { id: session.userId, email: session.user.email, sid: session.id },
       ACCESS_SECRET,
-      { expiresIn: "24h" },
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
     );
 
     await supabase
@@ -477,12 +735,10 @@ router.post("/verify-session-otp", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    // Sauvegarder le nouveau token JWT dans la réponse
-    // Le frontend (App.tsx handleLogin) le stockera dans localStorage
     res.json({
       user: {
         id: session.user.id,
@@ -497,6 +753,7 @@ router.post("/verify-session-otp", async (req, res) => {
         hasPin: !!session.user.pinHash,
       },
       token,
+      refreshToken,
     });
   } catch (error) {
     console.error("verify-session-otp error:", error);
@@ -505,15 +762,12 @@ router.post("/verify-session-otp", async (req, res) => {
 });
 
 // --- OTP ROUTES ---
-// In-memory store for OTPs (for demo purposes)
-// Moved to otpService.ts for sharing across routes
 
 router.post("/otp/request", async (req, res) => {
   try {
     const { contact, email, phone } = req.body;
     let target = contact || email || phone || "anonymous";
 
-    // Normalize phone if it looks like one
     if (
       target &&
       !target.includes("@") &&
@@ -528,7 +782,21 @@ router.post("/otp/request", async (req, res) => {
       target = target.toLowerCase();
     }
 
-    otpService.generateOtp(target);
+    const existing = await hasActiveChallenge(target, "generic");
+    if (existing) {
+      return res.status(429).json({
+        error: {
+          message: "Un code est déjà actif. Réessayez plus tard.",
+          code: "OTP_ALREADY_ACTIVE",
+        },
+      });
+    }
+
+    const challenge = await createOtpChallenge(target, "generic");
+    if (!challenge) {
+      return res.status(500).json({ error: "Failed to create OTP challenge" });
+    }
+    await sendOtp(target, challenge.code, "vérification");
 
     res.json({
       success: true,
@@ -546,7 +814,6 @@ router.post("/forgot-password", async (req, res) => {
     if (!identifier)
       return res.status(400).json({ error: "Identifier is required" });
 
-    // Normalize identifier: trim and remove internal spaces
     let target = identifier.trim().replace(/\s+/g, "");
     if (!target.includes("@") && /^\d+$/.test(target.replace("+", ""))) {
       if (target.startsWith("+")) {
@@ -560,7 +827,6 @@ router.post("/forgot-password", async (req, res) => {
       target = target.toLowerCase();
     }
 
-    // Check if user exists
     const { data: user } = await supabase
       .from("User")
       .select("id, email, phone")
@@ -575,25 +841,28 @@ router.post("/forgot-password", async (req, res) => {
     }
 
     console.log(`[FORGOT PASSWORD] Generating OTP for target: "${target}"`);
-    const otpCode = otpService.generateOtp(target);
-    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 minutes
+    const challenge = await createOtpChallenge(target, "password_reset");
+    if (!challenge) {
+      return res.status(500).json({ error: "Failed to create OTP challenge" });
+    }
+    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await sendOtp(target, challenge.code, "réinitialisation du mot de passe");
 
-    // Delete any existing password reset sessions for this user
     await supabase
       .from("Session")
       .delete()
       .eq("userId", user.id)
       .eq("device", "password_reset");
 
-    // Create a persistent session for password reset
     const { v4: uuidv4 } = await import("uuid");
     await supabase.from("Session").insert({
       id: uuidv4(),
       userId: user.id,
       token: `reset_${uuidv4()}`,
       device: "password_reset",
-      otpCode,
+      otpCode: null,
       otpExpiresAt,
+      challengeId: challenge.id,
       isVerified: false,
       createdAt: new Date().toISOString(),
       expiresAt: otpExpiresAt,
@@ -617,7 +886,6 @@ router.post("/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Normalize identifier: trim and remove internal spaces
     let target = identifier.trim().replace(/\s+/g, "");
     if (!target.includes("@") && /^\d+$/.test(target.replace("+", ""))) {
       if (target.startsWith("+")) {
@@ -631,11 +899,8 @@ router.post("/reset-password", async (req, res) => {
       target = target.toLowerCase();
     }
 
-    console.log(
-      `[AUTH] Reset password attempt for: ${target} with code: ${code}`,
-    );
+    console.log(`[AUTH] Reset password attempt for: ${target}`);
 
-    // Find the user first
     const { data: user } = await supabase
       .from("User")
       .select("id")
@@ -647,28 +912,39 @@ router.post("/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Invalid or expired code" });
     }
 
-    // Double vérification : otpService en mémoire ET session en BDD
-    // En phase test : otpService accepte 000000 si une session existe en BDD
-    const memoryValid = otpService.verifyOtp(target, code, false);
+    // Verrouillage par compte OTP (reset password)
+    const resetOtpKey = lockoutKey("otp-reset", user.id);
+    const resetLock = checkLockout(resetOtpKey);
+    if (resetLock.locked) {
+      return res.status(429).json({
+        error: {
+          message: "Trop de tentatives de code. Réessayez plus tard.",
+          code: "OTP_LOCKED",
+        },
+      });
+    }
 
-    // Find the password reset session in DB
     const { data: session, error: sessionError } = await supabase
       .from("Session")
       .select("*")
       .eq("userId", user.id)
       .eq("device", "password_reset")
-      .eq("otpCode", code)
       .maybeSingle();
 
-    // Accepter si au moins une des deux sources valide le code
+    const challengeValid = session?.challengeId
+      ? await verifyOtpChallenge(session.challengeId, code)
+      : false;
     const dbValid =
       !sessionError &&
       !!session &&
       new Date() <= new Date(session.otpExpiresAt);
 
-    if (!memoryValid && !dbValid) {
+    if (!challengeValid || !dbValid) {
+      recordFailure(resetOtpKey);
       return res.status(400).json({ error: "Invalid or expired code" });
     }
+
+    recordSuccess(resetOtpKey);
 
     if (session && new Date() > new Date(session.otpExpiresAt)) {
       console.log(
@@ -677,7 +953,6 @@ router.post("/reset-password", async (req, res) => {
       return res.status(400).json({ error: "Invalid or expired code" });
     }
 
-    // Update password
     const passwordHash = await bcrypt.hash(newPassword, 10);
     const { error: updateError } = await supabase
       .from("User")
@@ -686,11 +961,8 @@ router.post("/reset-password", async (req, res) => {
 
     if (updateError) throw updateError;
 
-    // Supprimer TOUTES les sessions de cet user après reset
     await supabase.from("Session").delete().eq("userId", user.id);
 
-    // ✅ AUTO-LOGIN POUR MVP HAÏTI
-    // Récupérer les infos complètes de l'utilisateur
     const { data: fullUser } = await supabase
       .from("User")
       .select("*")
@@ -701,20 +973,31 @@ router.post("/reset-password", async (req, res) => {
       return res.status(500).json({ error: "User not found after reset" });
     }
 
-    // Créer nouveau token et session
-    const token = jwt.sign(
-      { id: fullUser.id, email: fullUser.email },
-      ACCESS_SECRET,
-      { expiresIn: "24h" },
-    );
-    const refreshToken = jwt.sign({ id: fullUser.id }, REFRESH_SECRET, {
-      expiresIn: "30d",
-    });
-
-    // Créer une nouvelle session vérifiée
     const { v4: uuidv4 } = await import("uuid");
+    const resetSessionId = uuidv4();
+    const token = jwt.sign(
+      { id: fullUser.id, email: fullUser.email, sid: resetSessionId },
+      ACCESS_SECRET,
+      {
+        expiresIn: "24h",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+    const refreshToken = jwt.sign(
+      { id: fullUser.id, type: "refresh" },
+      REFRESH_SECRET,
+      {
+        expiresIn: "30d",
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        jwtid: crypto.randomUUID(),
+      },
+    );
+
     await supabase.from("Session").insert({
-      id: uuidv4(),
+      id: resetSessionId,
       userId: fullUser.id,
       token: refreshToken,
       device: "password_reset_auto_login",
@@ -726,11 +1009,10 @@ router.post("/reset-password", async (req, res) => {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    // Retourner user + token pour auto-login
     res.json({
       success: true,
       message: "Password reset successfully",
@@ -760,45 +1042,55 @@ router.post("/otp/resend", async (req, res) => {
     if (!requestId)
       return res.status(400).json({ error: "requestId is required" });
 
-    const otpCode = otpService.generateOtp(requestId);
-
-    // Check if this is a session token and update the DB if so
+    // requestId peut être un token de session (MFA / password reset) ou une
+    // cible (email/téléphone) issue de /otp/request.
     const { data: session } = await supabase
       .from("Session")
-      .select("id")
+      .select("*, user:User(email, phone)")
       .eq("token", requestId)
       .maybeSingle();
 
     if (session) {
+      const target = session.user?.email || session.user?.phone || "";
+      const purpose =
+        session.device === "password_reset" ? "password_reset" : "login_mfa";
+      const challenge = await createOtpChallenge(target, purpose);
+      if (!challenge) {
+        return res
+          .status(500)
+          .json({ error: "Failed to create OTP challenge" });
+      }
+      await sendOtp(target, challenge.code, "renvoi du code");
       await supabase
         .from("Session")
         .update({
-          otpCode,
+          challengeId: challenge.id,
+          otpCode: null,
           otpExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
         })
         .eq("id", session.id);
-    } else {
-      // Check if this is a password reset session (requestId is email or phone)
-      const { data: user } = await supabase
-        .from("User")
-        .select("id")
-        .or(`email.eq.${requestId},phone.eq.${requestId}`)
-        .maybeSingle();
-
-      if (user) {
-        await supabase
-          .from("Session")
-          .update({
-            otpCode,
-            otpExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-          })
-          .eq("userId", user.id)
-          .eq("device", "password_reset");
-      }
+      return res.json({ success: true, message: "OTP resent successfully" });
     }
 
+    // Cible directe (email/téléphone)
+    const directTarget = requestId.trim().replace(/\s+/g, "");
+    const existingDirect = await hasActiveChallenge(directTarget, "generic");
+    if (existingDirect) {
+      return res.status(429).json({
+        error: {
+          message: "Un code est déjà actif. Réessayez plus tard.",
+          code: "OTP_ALREADY_ACTIVE",
+        },
+      });
+    }
+    const challenge = await createOtpChallenge(directTarget, "generic");
+    if (!challenge) {
+      return res.status(500).json({ error: "Failed to create OTP challenge" });
+    }
+    await sendOtp(directTarget, challenge.code, "renvoi du code");
     res.json({ success: true, message: "OTP resent successfully" });
   } catch (error) {
+    console.error("OTP resend error:", error);
     res.status(500).json({ error: "Failed to resend OTP" });
   }
 });
@@ -810,21 +1102,31 @@ router.post("/otp/verify", async (req, res) => {
 
     if (!target)
       return res.status(400).json({ error: "Target identifier is required" });
+    if (!code) return res.status(400).json({ error: "Code is required" });
 
-    const isValid = otpService.verifyOtp(target, code, false);
+    // Retrouve le challenge actif le plus récent pour la cible
+    const { data: challenge } = await supabaseService
+      .from("otp_challenge")
+      .select("id")
+      .eq("target", target)
+      .is("consumed_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const challengeId = challenge?.id;
+    const isValid = challengeId
+      ? await verifyOtpChallenge(challengeId, code)
+      : false;
 
     if (!isValid) {
-      console.log(
-        `[SECURITY] OTP Verification FAILED for ${target} (Code: ${code})`,
-      );
+      console.log(`[SECURITY] OTP Verification FAILED for ${target}`);
       return res.status(400).json({
         error: { message: "Invalid or expired code", code: "INVALID_OTP" },
       });
     }
 
-    console.log(`[SECURITY] OTP Verification SUCCESS for ${target}`);
-
-    // If the target is an email, mark the user as device verified
     if (target.includes("@")) {
       await supabase
         .from("User")

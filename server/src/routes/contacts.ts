@@ -178,6 +178,62 @@ router.post("/sync", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
+// 1bis. SUGGESTIONS DE CONTACTS (Phase 2 — P2P)
+// Propose des utilisateurs piYès que le user n'a pas encore en contact,
+// avec un filtre de recherche optionnel (tag / nom / email / téléphone).
+router.get("/suggestions", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const q = (req.query.q as string) || "";
+    const limit = Math.min(
+      parseInt((req.query.limit as string) || "10", 10),
+      50,
+    );
+
+    // Ids des contacts déjà ajoutés par ce user (scopé au user courant)
+    const { data: existing } = await supabase
+      .from("Contact")
+      .select("contactUserId")
+      .eq("userId", userId);
+    const existingUserIds = new Set(
+      (existing || [])
+        .filter((c: any) => c.contactUserId)
+        .map((c: any) => c.contactUserId),
+    );
+
+    // La recherche ne porte que sur les champs publics (tag / nom) :
+    // pas d'énumération de l'annuaire par email/téléphone.
+    let query = supabase
+      .from("User")
+      .select("id, name, tag, avatarUrl")
+      .neq("id", userId);
+
+    if (q) {
+      query = query.or(`tag.ilike.%${q}%,name.ilike.%${q}%`);
+    }
+
+    const { data: candidates, error } = await query.limit(limit);
+    if (error) throw error;
+
+    const suggestions = (candidates || [])
+      .filter((u: any) => !existingUserIds.has(u.id))
+      .map((u: any) => ({
+        id: u.id,
+        name: u.name,
+        tag: u.tag,
+        avatarUrl: u.avatarUrl,
+        isUser: true,
+      }));
+
+    res.json({ suggestions });
+  } catch (error) {
+    console.error("Suggestions error:", error);
+    res.status(500).json({ error: "Failed to fetch suggestions" });
+  }
+});
+
 // 2. GET CONTACTS
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   try {
@@ -204,12 +260,22 @@ router.post("/update/:id", authMiddleware, async (req: AuthRequest, res) => {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const { id } = req.params;
-    const updates = req.body;
+    const { name, tag, phone, email, randomKey, isFavorite } = req.body;
+
+    // Whitelist stricte : pas de mass-assignment (userId, contactUserId,
+    // isVerified, avatarUrl… ne sont jamais acceptés du body).
+    const updateData: any = { updatedAt: new Date().toISOString() };
+    if (name !== undefined) updateData.name = name;
+    if (tag !== undefined) updateData.tag = tag;
+    if (phone !== undefined) updateData.phone = phone;
+    if (email !== undefined) updateData.email = email;
+    if (randomKey !== undefined) updateData.randomKey = randomKey;
+    if (isFavorite !== undefined) updateData.isFavorite = isFavorite;
 
     // Sécurité : s'assurer que le contact appartient au user
     const { data, error } = await supabase
       .from("Contact")
-      .update({ ...updates, updatedAt: new Date().toISOString() })
+      .update(updateData)
       .eq("id", id)
       .eq("userId", userId)
       .select()
