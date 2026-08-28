@@ -93,6 +93,7 @@ async function initializeApp() {
     "http://localhost:4173",
     "http://localhost:3000",
     "http://192.168.15.2:5173",
+    "http://192.168.15.4:5173",
     "http://192.168.15.2:3000",
     process.env.FRONTEND_URL || "",
     "capacitor://localhost",
