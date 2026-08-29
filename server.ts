@@ -9,19 +9,19 @@ import helmet from "helmet";
 import { fileURLToPath } from "url";
 
 // ✅ IMPORTS AVEC .ts (pour tsx)
-import authRoutes from "./server/src/routes/auth.ts";
-import userRoutes from "./server/src/routes/user.ts";
-import transactionsRoutes from "./server/src/routes/transactions.ts";
-import contactsRoutes from "./server/src/routes/contacts.ts";
-import friendshipRoutes from "./server/src/routes/friendship.ts";
-import schedulerRoutes from "./server/src/routes/scheduler.ts";
-import servicesRoutes from "./server/src/routes/services.ts";
-import promotionsRoutes from "./server/src/routes/promotions.ts";
-import banksRoutes from "./server/src/routes/banks.ts";
+import authRoutes from "./server/src/routes/auth.js";
+import userRoutes from "./server/src/routes/user.js";
+import transactionsRoutes from "./server/src/routes/transactions.js";
+import contactsRoutes from "./server/src/routes/contacts.js";
+import friendshipRoutes from "./server/src/routes/friendship.js";
+import schedulerRoutes from "./server/src/routes/scheduler.js";
+import servicesRoutes from "./server/src/routes/services.js";
+import promotionsRoutes from "./server/src/routes/promotions.js";
+import banksRoutes from "./server/src/routes/banks.js";
 
 // ✅ PHASE 4 – OBP ROUTES (montées à la racine, hors /api/v1)
-import obpKeysRoutes from "./server/src/routes/obpKeys.ts";
-import obpFacadeRoutes from "./server/src/routes/obpFacade.ts";
+import obpKeysRoutes from "./server/src/routes/obpKeys.js";
+import obpFacadeRoutes from "./server/src/routes/obpFacade.js";
 
 // ✅ SÉCURITÉ – middlewares de protection
 import {
@@ -32,8 +32,8 @@ import {
   fundsLimiter,
   apiKeyLimiter,
   obpLimiter,
-} from "./server/src/middleware/rateLimit.ts";
-import { errorHandler } from "./server/src/middleware.ts";
+} from "./server/src/middleware/rateLimit.js";
+import { errorHandler } from "./server/src/middleware.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

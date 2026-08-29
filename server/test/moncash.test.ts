@@ -210,7 +210,7 @@ async function importService(mockPort: number) {
   process.env.MONCASH_API_HOST = `http://127.0.0.1:${mockPort}/Api`;
   process.env.MONCASH_GATEWAY_URL =
     "https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware";
-  const mod = await import("../src/services/moncashService.ts");
+  const mod = await import("../src/services/moncashService.js");
   return mod;
 }
 
@@ -324,7 +324,7 @@ test("service: prefundedTransactionStatus", async () => {
 });
 
 test("service: sans client_id/secret → MonCashError config", async () => {
-  const mod = await import("../src/services/moncashService.ts");
+  const mod = await import("../src/services/moncashService.js");
   const savedId = process.env.MONCASH_CLIENT_ID;
   const savedSecret = process.env.MONCASH_CLIENT_SECRET;
   process.env.MONCASH_CLIENT_ID = "";

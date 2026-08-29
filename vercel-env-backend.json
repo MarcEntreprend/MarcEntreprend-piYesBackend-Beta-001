@@ -1,0 +1,146 @@
+[
+  {
+    "key": "NODE_ENV",
+    "value": "production",
+    "type": "plain",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "JWT_ACCESS_SECRET",
+    "value": "piyes_access_secret_change_me_in_prod_a1b2c3d4e5f6",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "JWT_REFRESH_SECRET",
+    "value": "piyes_refresh_secret_change_me_in_prod_f6e5d4c3b2a1",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "SUPABASE_URL",
+    "value": "https://ipumvfqnlzcsavwnesrn.supabase.co",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "SUPABASE_ANON_KEY",
+    "value": "sb_publishable_fjeckM6IOJhIYSKjckTL1A_4cjt2R2R",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "SUPABASE_SERVICE_ROLE_KEY",
+    "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlwdW12ZnFubHpjc2F2d25lc3JuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjA3MzQwNSwiZXhwIjoyMDg3NjQ5NDA1fQ.1NR8qo7dlIvUpVegJAoKgI547QqiPrLt6cdmhmmYip4",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "DATABASE_URL",
+    "value": "postgresql://postgres.ipumvfqnlzcsavwnesrn:QqTyryd2L7MZ7JCKQPcUCTT2BfpMUfRV@aws-1-us-east-2.pooler.supabase.com:6543/postgres?pgbouncer=true",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "DIRECT_URL",
+    "value": "postgresql://postgres.ipumvfqnlzcsavwnesrn:QqTyryd2L7MZ7JCKQPcUCTT2BfpMUfRV@aws-1-us-east-2.pooler.supabase.com:5432/postgres",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "FRONTEND_URL",
+    "value": "https://piyes-wallet.vercel.app",
+    "type": "plain",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "CRON_SECRET",
+    "value": "piyes_cron_secret_a1b2c3d4e5f6",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_CLIENT_ID",
+    "value": "4d1d47926758fa27c42175fe6d1780a8",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_CLIENT_SECRET",
+    "value": "3KTYedyQ6RL3w0TfJBnF_CejmX-7BkWJFyQLZ5bQVgmQzhcW2oKwb5PYI4Xrzk5d",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_BUSINESS_KEY",
+    "value": "UmxSbExXTkpTMUF0YTAwOSBiMnRGUjBST1MyZFVTMFJTV1ZCSU1FcHdlV2RGUVQwOQ==",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_API_HOST",
+    "value": "sandbox.moncashbutton.digicelgroup.com/Api",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_GATEWAY_URL",
+    "value": "https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_RETURN_URL",
+    "value": "https://webhook.site/8dd9a2f9-29d3-4da1-a24b-09f0146b805e",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_ALERT_URL",
+    "value": "https://github.com/MarcEntreprend",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "MONCASH_ADMIN_SECRET",
+    "value": "admin_secure_key_change_me",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "GEMINI_API_KEY",
+    "value": "TA_VRAIE_CLE_GEMINI",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "OTP_FROM_EMAIL",
+    "value": "marc.entreprend@gmail.com",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "TWILIO_ACCOUNT_SID",
+    "value": "ACxxxxxxxx",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "TWILIO_AUTH_TOKEN",
+    "value": "xxxxxxxx",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "TWILIO_FROM",
+    "value": "+509xxxxxxx",
+    "type": "encrypted",
+    "target": ["production", "preview", "development"]
+  },
+  {
+    "key": "DEV_OTP_MODE",
+    "value": "true",
+    "type": "plain",
+    "target": ["production", "preview", "development"]
+  }
+]

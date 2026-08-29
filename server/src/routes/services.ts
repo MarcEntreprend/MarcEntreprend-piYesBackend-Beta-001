@@ -10,7 +10,7 @@ import {
   getOrCreateCustomerLedgerAccount,
   ledgerErrorResponse,
   postOrder,
-} from "../services/ledgerService.ts";
+} from "../services/ledgerService.js";
 import { verifyPin } from "../services/pinService.js";
 
 const router = express.Router();

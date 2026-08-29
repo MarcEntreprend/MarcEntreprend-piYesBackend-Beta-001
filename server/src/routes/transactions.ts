@@ -26,7 +26,7 @@ import {
   getSystemCashAccountId,
   ledgerErrorResponse,
   postOrder,
-} from "../services/ledgerService.ts";
+} from "../services/ledgerService.js";
 
 const router = express.Router();
 

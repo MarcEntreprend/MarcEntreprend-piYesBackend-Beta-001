@@ -13,7 +13,7 @@ import {
   checkLockout,
   recordFailure,
   recordSuccess,
-} from "../services/lockoutService.ts";
+} from "../services/lockoutService.js";
 import crypto from "crypto";
 
 const router = express.Router();

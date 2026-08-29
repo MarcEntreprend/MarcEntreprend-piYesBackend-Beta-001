@@ -86,7 +86,6 @@ export async function sendOtp(
   }
 
   // Dev : journalisation console + retour du code si DEV_OTP_MODE
-  const isDevMode = process.env.NODE_ENV !== "production" || process.env.DEV_OTP_MODE === "true";
   if (isDevMode) {
     console.log("\n" + "█".repeat(60));
     console.log("█" + " ".repeat(58) + "█");

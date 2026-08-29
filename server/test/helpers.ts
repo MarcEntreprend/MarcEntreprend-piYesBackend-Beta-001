@@ -47,7 +47,7 @@ export async function startServer(
   console.log("[DEBUG] cmd:", cmd);
   console.log("[DEBUG] cwd:", PROJECT_ROOT);
 
-  const proc = spawn(cmd, ["tsx", "server.ts"], {
+  const proc = spawn(cmd, ["tsx", "server.js"], {
     cwd: PROJECT_ROOT,
     env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
