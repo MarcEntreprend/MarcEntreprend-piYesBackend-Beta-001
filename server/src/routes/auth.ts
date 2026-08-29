@@ -796,13 +796,17 @@ router.post("/otp/request", async (req, res) => {
     if (!challenge) {
       return res.status(500).json({ error: "Failed to create OTP challenge" });
     }
-    await sendOtp(target, challenge.code, "vérification");
+    const otpResult = await sendOtp(target, challenge.code, "vérification");
 
-    res.json({
+    const response: any = {
       success: true,
       message: "OTP sent successfully",
       requestId: target,
-    });
+    };
+    if (otpResult.devCode) {
+      response.devCode = otpResult.devCode;
+    }
+    res.json(response);
   } catch (error) {
     res.status(500).json({ error: "Failed to request OTP" });
   }
@@ -846,7 +850,7 @@ router.post("/forgot-password", async (req, res) => {
       return res.status(500).json({ error: "Failed to create OTP challenge" });
     }
     const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    await sendOtp(target, challenge.code, "réinitialisation du mot de passe");
+    const otpResult = await sendOtp(target, challenge.code, "réinitialisation du mot de passe");
 
     await supabase
       .from("Session")
@@ -868,11 +872,15 @@ router.post("/forgot-password", async (req, res) => {
       expiresAt: otpExpiresAt,
     });
 
-    res.json({
+    const response: any = {
       success: true,
       message: "OTP sent successfully",
       requestId: target,
-    });
+    };
+    if (otpResult.devCode) {
+      response.devCode = otpResult.devCode;
+    }
+    res.json(response);
   } catch (error) {
     console.error("Forgot password error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -1060,7 +1068,7 @@ router.post("/otp/resend", async (req, res) => {
           .status(500)
           .json({ error: "Failed to create OTP challenge" });
       }
-      await sendOtp(target, challenge.code, "renvoi du code");
+      const otpResult = await sendOtp(target, challenge.code, "renvoi du code");
       await supabase
         .from("Session")
         .update({
@@ -1069,7 +1077,9 @@ router.post("/otp/resend", async (req, res) => {
           otpExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
         })
         .eq("id", session.id);
-      return res.json({ success: true, message: "OTP resent successfully" });
+      const response: any = { success: true, message: "OTP resent successfully" };
+      if (otpResult.devCode) response.devCode = otpResult.devCode;
+      return res.json(response);
     }
 
     // Cible directe (email/téléphone)
@@ -1087,8 +1097,10 @@ router.post("/otp/resend", async (req, res) => {
     if (!challenge) {
       return res.status(500).json({ error: "Failed to create OTP challenge" });
     }
-    await sendOtp(directTarget, challenge.code, "renvoi du code");
-    res.json({ success: true, message: "OTP resent successfully" });
+    const otpResult = await sendOtp(directTarget, challenge.code, "renvoi du code");
+    const response: any = { success: true, message: "OTP resent successfully" };
+    if (otpResult.devCode) response.devCode = otpResult.devCode;
+    res.json(response);
   } catch (error) {
     console.error("OTP resend error:", error);
     res.status(500).json({ error: "Failed to resend OTP" });

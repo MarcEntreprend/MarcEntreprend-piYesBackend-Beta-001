@@ -40,8 +40,9 @@ export async function sendOtp(
   target: string,
   code: string,
   purpose: string,
-): Promise<{ channel: OtpChannel; ok: boolean }> {
+): Promise<{ channel: OtpChannel; ok: boolean; devCode?: string }> {
   const channel = detectChannel(target);
+  const isDevMode = process.env.NODE_ENV !== "production" || process.env.DEV_OTP_MODE === "true";
 
   if (channel === "email") {
     try {
@@ -84,8 +85,9 @@ export async function sendOtp(
     }
   }
 
-  // Dev : journalisation console (jamais en production, même sans provider)
-  if (process.env.NODE_ENV !== "production") {
+  // Dev : journalisation console + retour du code si DEV_OTP_MODE
+  const isDevMode = process.env.NODE_ENV !== "production" || process.env.DEV_OTP_MODE === "true";
+  if (isDevMode) {
     console.log("\n" + "█".repeat(60));
     console.log("█" + " ".repeat(58) + "█");
     console.log("█" + "   [DEV] OTP CODE GENERATED".padEnd(58) + "█");
@@ -95,6 +97,7 @@ export async function sendOtp(
     console.log("█" + " ".repeat(58) + "█");
     console.log("█".repeat(60) + "\n");
     console.log(`[DEV] YOUR OTP IS: ${code}`);
+    return { channel: "dev", ok: true, devCode: code };
   }
   return { channel: "dev", ok: true };
 }
