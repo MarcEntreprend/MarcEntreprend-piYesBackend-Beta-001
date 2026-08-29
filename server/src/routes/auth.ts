@@ -549,7 +549,7 @@ router.post("/login", async (req, res) => {
           .json({ error: "Failed to create OTP challenge" });
       }
       const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
-      await sendOtp(target, challenge.code, "connexion");
+      const otpResult = await sendOtp(target, challenge.code, "connexion");
 
       // Create a pending session
       const { v4: uuidv4 } = await import("uuid");
@@ -577,6 +577,7 @@ router.post("/login", async (req, res) => {
         mfaRequired: true,
         requestId: tempToken,
         message: "OTP sent to your verified contact",
+        ...(otpResult.devCode && { devCode: otpResult.devCode }),
       });
     }
 

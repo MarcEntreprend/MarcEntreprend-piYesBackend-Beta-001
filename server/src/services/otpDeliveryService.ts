@@ -44,7 +44,61 @@ export async function sendOtp(
   const channel = detectChannel(target);
   const isDevMode = process.env.NODE_ENV !== "production" || process.env.DEV_OTP_MODE === "true";
 
-  if (channel === "email") {
+  // En mode dev, on retourne TOUJOURS le code (pour les tests)
+  if (isDevMode) {
+    console.log("\n" + "█".repeat(60));
+    console.log("█" + " ".repeat(58) + "█");
+    console.log("█" + "   [DEV] OTP CODE GENERATED".padEnd(58) + "█");
+    console.log("█" + `   TARGET: ${target}`.padEnd(58) + "█");
+    console.log("█" + `   PURPOSE: ${purpose}`.padEnd(58) + "█");
+    console.log("█" + `   CODE:   ${code}`.padEnd(58) + "█");
+    console.log("█" + " ".repeat(58) + "█");
+    console.log("█".repeat(60) + "\n");
+    console.log(`[DEV] YOUR OTP IS: ${code}`);
+    // On essaie d'envoyer réellement si provider configuré, mais on retourne le code quand même
+    if (channel === "email" && RESEND_API_KEY) {
+      try {
+        const resend = new Resend(RESEND_API_KEY);
+        await resend.emails.send({
+          from: FROM_EMAIL,
+          to: target,
+          subject: `Votre code piYès (${purpose})`,
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:auto">
+              <h2>piYès</h2>
+              <p>Votre code de vérification est :</p>
+              <div style="font-size:32px;font-weight:bold;letter-spacing:6px;color:#830AD1">${code}</div>
+              <p>Ce code expire dans 15 minutes. Si vous n'êtes pas à l'origine de cette
+              demande, ignorez cet email.</p>
+            </div>
+          `,
+        });
+        return { channel: "email", ok: true, devCode: code };
+      } catch (e) {
+        console.error("[OTP] Resend delivery failed:", e);
+      }
+    }
+    if (channel === "sms" && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM) {
+      try {
+        const twilioModule: any = await import("twilio");
+        const Twilio = twilioModule.default || twilioModule.Twilio;
+        const client = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+        await client.messages.create({
+          body: `piYès : votre code est ${code}. Valable 15 min.`,
+          from: TWILIO_FROM,
+          to: target,
+        });
+        return { channel: "sms", ok: true, devCode: code };
+      } catch (e) {
+        console.error("[OTP] Twilio delivery failed:", e);
+      }
+    }
+    // Fallback: mode dev pur, on retourne le code
+    return { channel: "dev", ok: true, devCode: code };
+  }
+
+  // Production mode: essaie d'envoyer vraiment
+  if (channel === "email" && RESEND_API_KEY) {
     try {
       const resend = new Resend(RESEND_API_KEY);
       await resend.emails.send({
@@ -68,7 +122,7 @@ export async function sendOtp(
     }
   }
 
-  if (channel === "sms") {
+  if (channel === "sms" && TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_FROM) {
     try {
       const twilioModule: any = await import("twilio");
       const Twilio = twilioModule.default || twilioModule.Twilio;
@@ -85,18 +139,6 @@ export async function sendOtp(
     }
   }
 
-  // Dev : journalisation console + retour du code si DEV_OTP_MODE
-  if (isDevMode) {
-    console.log("\n" + "█".repeat(60));
-    console.log("█" + " ".repeat(58) + "█");
-    console.log("█" + "   [DEV] OTP CODE GENERATED".padEnd(58) + "█");
-    console.log("█" + `   TARGET: ${target}`.padEnd(58) + "█");
-    console.log("█" + `   PURPOSE: ${purpose}`.padEnd(58) + "█");
-    console.log("█" + `   CODE:   ${code}`.padEnd(58) + "█");
-    console.log("█" + " ".repeat(58) + "█");
-    console.log("█".repeat(60) + "\n");
-    console.log(`[DEV] YOUR OTP IS: ${code}`);
-    return { channel: "dev", ok: true, devCode: code };
-  }
-  return { channel: "dev", ok: true };
+  // Pas de provider configuré en prod
+  return { channel: "dev", ok: false };
 }
