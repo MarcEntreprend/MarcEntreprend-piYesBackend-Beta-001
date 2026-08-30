@@ -154,6 +154,37 @@ export async function hasActiveChallenge(
   return !error && !!data;
 }
 
+export async function getActiveChallengeRemaining(
+  target: string,
+  purpose: OtpPurpose = "generic",
+): Promise<number | null> {
+  const { data } = await supabaseService
+    .from("otp_challenge")
+    .select("expires_at")
+    .eq("target", target)
+    .eq("purpose", purpose)
+    .is("consumed_at", null)
+    .gt("expires_at", new Date().toISOString())
+    .order("expires_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  const ms = new Date((data as any).expires_at).getTime() - Date.now();
+  return ms > 0 ? Math.ceil(ms / 1000) : null;
+}
+
+function formatRetry(sec: number): string {
+  if (sec <= 0) return "quelques secondes";
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+export function formatRetryMessage(sec: number | null, prefix = "Un code est déjà actif."): string {
+  if (sec) return `${prefix} Réessayez dans ${formatRetry(sec)}.`;
+  return `${prefix} Réessayez plus tard.`;
+}
+
 // Récupère les métadonnées associées à un challenge (ex: création de clé).
 export async function getOtpChallengeMetadata(
   challengeId: string,

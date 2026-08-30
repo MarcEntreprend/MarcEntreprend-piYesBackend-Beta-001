@@ -9,6 +9,8 @@ import {
   createOtpChallenge,
   verifyOtpChallenge,
   hasActiveChallenge,
+  getActiveChallengeRemaining,
+  formatRetryMessage,
 } from "../services/otpService.js";
 import { sendOtp } from "../services/otpDeliveryService.js";
 import { loginSchema, signupSchema } from "../../../shared/schemas.js";
@@ -785,10 +787,12 @@ router.post("/otp/request", async (req, res) => {
 
     const existing = await hasActiveChallenge(target, "generic");
     if (existing) {
+      const retryAfter = await getActiveChallengeRemaining(target, "generic");
       return res.status(429).json({
         error: {
-          message: "Un code est déjà actif. Réessayez plus tard.",
+          message: formatRetryMessage(retryAfter),
           code: "OTP_ALREADY_ACTIVE",
+          retryAfter,
         },
       });
     }
@@ -1087,10 +1091,12 @@ router.post("/otp/resend", async (req, res) => {
     const directTarget = requestId.trim().replace(/\s+/g, "");
     const existingDirect = await hasActiveChallenge(directTarget, "generic");
     if (existingDirect) {
+      const retryAfter = await getActiveChallengeRemaining(directTarget, "generic");
       return res.status(429).json({
         error: {
-          message: "Un code est déjà actif. Réessayez plus tard.",
+          message: formatRetryMessage(retryAfter),
           code: "OTP_ALREADY_ACTIVE",
+          retryAfter,
         },
       });
     }
