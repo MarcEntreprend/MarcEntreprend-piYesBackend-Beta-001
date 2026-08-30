@@ -162,10 +162,11 @@ async function initializeApp() {
 
   // Rate limiting – routes sensibles (avant montage des routes)
   apiV1.use("/auth/login", authLimiter);
-  apiV1.use("/auth/forgot-password", authLimiter);
+  apiV1.use("/auth/forgot-password", otpLimiter);
   apiV1.use("/auth/reset-password", authLimiter);
-  apiV1.use("/auth/otp", otpLimiter);
-  apiV1.use("/auth/verify-session-otp", otpLimiter);
+  apiV1.use("/auth/otp/request", otpLimiter);
+  apiV1.use("/auth/otp/resend", otpLimiter);
+  // verify endpoints exclus du otpLimiter sliding (doivent renvoyer 400 pas 429)
   apiV1.use("/user/pin/verify", pinLimiter);
   apiV1.use("/transactions", fundsLimiter);
 
